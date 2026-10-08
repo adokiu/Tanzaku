@@ -1,0 +1,42 @@
+[package]
+name = "tz-carrier"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[features]
+default = ["tcp", "quic"]
+tcp = ["dep:chacha20poly1305", "dep:hkdf", "dep:sha2", "dep:getrandom"]
+quic = ["dep:quinn", "dep:quinn-proto", "dep:seahash"]
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+dashmap.workspace = true
+futures-util.workspace = true
+inventory.workspace = true
+arc-swap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+socket2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "net", "sync", "time"] }
+tracing.workspace = true
+tz-common.workspace = true
+tz-net.workspace = true
+tz-proto.workspace = true
+uuid = { workspace = true, features = ["serde"] }
+sha2 = { workspace = true, optional = true }
+hkdf = { workspace = true, optional = true }
+chacha20poly1305 = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
+quinn = { workspace = true, optional = true }
+quinn-proto = { workspace = true, optional = true }
+seahash = { workspace = true, optional = true }
+
+[build-dependencies]
+
+[lints]
+workspace = true

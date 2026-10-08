@@ -1,0 +1,37 @@
+{
+  "name": "tanzaku-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev:admin": "vite --config vite.admin.config.ts --open /admin.html",
+    "dev:user": "vite --config vite.user.config.ts --open /user.html",
+    "build": "tsc --noEmit -p tsconfig.json && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.59.0",
+    "axios": "^1.7.7",
+    "class-variance-authority": "0.7.0",
+    "clsx": "2.1.1",
+    "i18next": "23.12.0",
+    "i18next-browser-languagedetector": "8.0.0",
+    "lucide-react": "0.416.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-i18next": "14.1.0",
+    "react-router-dom": "6.26.0",
+    "tailwind-merge": "2.4.0",
+    "zustand": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.0",
+    "@vitejs/plugin-react": "4.3.1",
+    "autoprefixer": "10.4.19",
+    "postcss": "8.4.39",
+    "tailwindcss": "3.4.6",
+    "typescript": "5.5.3",
+    "vite": "5.3.4"
+  }
+}

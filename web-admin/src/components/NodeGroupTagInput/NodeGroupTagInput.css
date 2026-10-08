@@ -1,0 +1,100 @@
+.node-group-tag-input {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.node-group-tag-input__box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 6px 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--background));
+  cursor: text;
+}
+
+.node-group-tag-input__box:focus-within {
+  border-color: hsl(var(--foreground) / 0.35);
+  box-shadow: 0 0 0 2px hsl(var(--foreground) / 0.08);
+}
+
+.node-group-tag-input__tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.4;
+  background: hsl(var(--card));
+  color: hsl(var(--foreground));
+  white-space: nowrap;
+  box-shadow: 0 1px 0 hsl(var(--foreground) / 0.04);
+}
+
+.node-group-tag-input__tag-remove {
+  display: inline-flex;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  line-height: 1;
+}
+
+.node-group-tag-input__tag-remove:hover {
+  color: hsl(var(--foreground));
+}
+
+.node-group-tag-input__field {
+  flex: 1;
+  min-width: 120px;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 14px;
+  font-family: inherit;
+  color: hsl(var(--foreground));
+}
+
+.node-group-tag-input__suggestions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 160px;
+  overflow-y: auto;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--card));
+  padding: 4px;
+}
+
+.node-group-tag-input__suggestion {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 13px;
+  font-family: inherit;
+  color: hsl(var(--foreground));
+  cursor: pointer;
+}
+
+.node-group-tag-input__suggestion:hover,
+.node-group-tag-input__suggestion--active {
+  background: hsl(var(--muted));
+}
+
+.node-group-tag-input__hint {
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  line-height: 1.4;
+}

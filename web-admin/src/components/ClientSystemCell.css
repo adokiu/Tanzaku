@@ -1,0 +1,36 @@
+.client-system-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.client-system-cell__icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  object-fit: contain;
+}
+
+.client-system-cell__text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.client-system-cell__os {
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.client-system-cell__arch,
+.client-system-cell__version {
+  color: var(--muted-foreground, #6b7280);
+  font-size: 11px;
+}

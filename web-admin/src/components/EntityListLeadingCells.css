@@ -1,0 +1,94 @@
+.entity-list-cell {
+  box-sizing: border-box;
+  vertical-align: middle;
+}
+
+.data-table.data-table--entity-list td > .entity-list-cell.data-table-cell {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  height: 48px;
+  box-sizing: border-box;
+}
+
+.data-table.data-table--entity-list td > .entity-list-cell--id.data-table-cell {
+  overflow: visible;
+  text-overflow: clip;
+  max-width: none;
+}
+
+/* 前 4 列：内容再长也不撑开列宽 */
+.data-table td > .entity-list-cell--fixed.data-table-cell {
+  overflow: hidden;
+  max-width: 100%;
+}
+
+.entity-list-cell--id {
+  font-family: var(--font-family-number, ui-monospace, monospace);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  flex: 0 0 auto;
+}
+
+.entity-list-cell--status {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+}
+
+.data-table-tag--role-admin {
+  color: hsl(var(--foreground));
+  background: hsl(var(--muted));
+}
+
+.data-table-tag--role-user {
+  color: hsl(var(--muted-foreground));
+  background: hsl(var(--muted) / 0.55);
+}
+
+.entity-list-cell__status-tag {
+  padding: 0 5px;
+  font-size: 11px;
+  line-height: 18px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.entity-list-cell--region {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0;
+}
+
+.entity-list-cell__flag {
+  width: 24px;
+  height: 17px;
+  border-radius: 2px;
+  object-fit: cover;
+  display: block;
+  flex-shrink: 0;
+}
+
+.entity-list-cell--ip {
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entity-list-cell--name {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+

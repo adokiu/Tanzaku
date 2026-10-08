@@ -1,0 +1,14 @@
+{
+  "name": "Tanzaku 默认用户主题",
+  "short": "Tanzaku",
+  "description": "Tanzaku 用户控制台默认主题",
+  "version": "0.1.0",
+  "author": "Tanzaku",
+  "url": "https://github.com/tanzaku/tanzaku",
+  "preview": "preview.png",
+  "configuration": {
+    "type": "managed",
+    "name": "主题设置",
+    "data": []
+  }
+}

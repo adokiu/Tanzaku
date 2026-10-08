@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>域名未备案</title>
+<style>
+  :root {
+    --ink: #1a1814;
+    --muted: #5c564c;
+    --line: #ddd6c8;
+    --paper: #f4f0e8;
+    --card: #fbf9f5;
+    --seal: #8f2d2a;
+    --seal-soft: #f3e4e1;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    color: var(--ink);
+    background:
+      radial-gradient(1200px 480px at 50% -120px, #fff 0%, transparent 60%),
+      var(--paper);
+    font-family: "Songti SC", "Noto Serif SC", "Source Han Serif SC", "STSong", "SimSun", serif;
+    display: flex;
+    align-items: safe center;
+    justify-content: center;
+    padding: 32px 16px;
+  }
+  .wrap { width: min(760px, 100%); }
+  .mark {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+    font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    font-size: 12px;
+    letter-spacing: 0.22em;
+    color: var(--muted);
+  }
+  .sheet {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    box-shadow: 0 1px 0 rgba(255,255,255,.8) inset, 0 24px 48px rgba(60, 48, 30, .06);
+    padding: 48px 52px 40px;
+    position: relative;
+    overflow: hidden;
+  }
+  .sheet::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 4px;
+    background: var(--seal);
+  }
+  .seal { width: 92px; height: 92px; margin-bottom: 22px; }
+  h1 {
+    margin: 0 0 12px;
+    font-size: 40px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    line-height: 1.2;
+  }
+  .lede {
+    margin: 0 0 28px;
+    font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    font-size: 16px;
+    line-height: 1.75;
+    color: var(--muted);
+  }
+  blockquote {
+    margin: 0 0 28px;
+    padding: 18px 20px 16px;
+    background: var(--seal-soft);
+    border-radius: 2px;
+  }
+  blockquote p { margin: 0 0 10px; font-size: 16px; line-height: 1.85; }
+  blockquote p:last-of-type { margin-bottom: 0; }
+  blockquote cite {
+    display: block;
+    margin-top: 10px;
+    font-style: normal;
+    font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    color: var(--seal);
+  }
+  blockquote cite a {
+    color: inherit;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  blockquote cite svg { flex: none; }
+  ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 14px; }
+  li {
+    display: grid;
+    grid-template-columns: 28px 1fr;
+    gap: 12px;
+    align-items: start;
+    font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    font-size: 15px;
+    line-height: 1.65;
+  }
+  .n {
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--line);
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    font-size: 13px;
+    color: var(--seal);
+  }
+  .note {
+    margin: 28px 0 0;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+    font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--muted);
+  }
+  @media (max-width: 640px) {
+    .sheet { padding: 32px 22px 28px; }
+    h1 { font-size: 30px; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="mark"><span>TANZAKU</span><span>备案提示</span></div>
+    <article class="sheet">
+      <svg class="seal" viewBox="0 0 92 92" aria-hidden="true">
+        <circle cx="46" cy="46" r="42" fill="none" stroke="#8f2d2a" stroke-width="2"/>
+        <circle cx="46" cy="46" r="36" fill="none" stroke="#8f2d2a" stroke-width="1"/>
+        <text x="46" y="52" text-anchor="middle" fill="#8f2d2a" font-size="18" font-family="Songti SC, STSong, serif">未备案</text>
+      </svg>
+      <h1>该域名尚未备案</h1>
+      <p class="lede">当前域名未完成备案过白，不能通过中国大陆节点提供互联网信息服务。</p>
+      <blockquote>
+        <p>第五条　在中华人民共和国境内提供非经营性互联网信息服务，应当依法履行备案手续。未经备案，不得在中华人民共和国境内从事非经营性互联网信息服务。</p>
+        <cite><a href="https://wap.miit.gov.cn/zcfg/xxtxl/art/2024/art_7e48434c08c24131b4b7eecfca5b2b6c.html" target="_blank" rel="noopener noreferrer"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>《非经营性互联网信息服务备案管理办法》</a></cite>
+      </blockquote>
+      <ol>
+        <li><span class="n">1</span><span>先为该域名完成网站备案。</span></li>
+        <li><span class="n">2</span><span>备案通过后，提交过白申请或者等待自动过白。</span></li>
+        <li><span class="n">3</span><span>过白生效后即可通过 HTTP 隧道访问。直接使用 IP 地址不受此限制。</span></li>
+      </ol>
+    </article>
+  </div>
+</body>
+</html>

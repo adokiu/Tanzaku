@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tanzaku 初始化</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; background: #f3f5f8; color: #17202a; }
+    body { max-width: 760px; margin: 40px auto; padding: 0 20px; }
+    main { background: white; border: 1px solid #dce2e8; border-radius: 12px; padding: 28px; }
+    h1 { margin-top: 0; font-size: 24px; }
+    h2 { margin: 28px 0 12px; font-size: 17px; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    label { display: grid; gap: 6px; font-size: 14px; }
+    input, select, button { box-sizing: border-box; min-height: 40px; padding: 8px 10px; border: 1px solid #b8c2cc; border-radius: 6px; font: inherit; }
+    button { cursor: pointer; background: #17202a; color: white; }
+    .actions { display: flex; gap: 10px; margin-top: 18px; }
+    #status { min-height: 24px; margin-top: 16px; }
+    @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Tanzaku 首次初始化</h1>
+    <p>填写 PostgreSQL、Redis 连接信息及首个管理员账户。此页面只在 admin 监听端口提供。</p>
+    <form id="setup-form">
+      <h2>PostgreSQL</h2>
+      <div class="grid">
+        <label>主机<input name="pg_host" required autocomplete="off"></label>
+        <label>端口<input name="pg_port" type="number" min="1" max="65535" value="5432" required></label>
+        <label>数据库<input name="pg_database" required autocomplete="off"></label>
+        <label>用户<input name="pg_user" required autocomplete="username"></label>
+        <label>密码<input name="pg_password" type="password" required autocomplete="new-password"></label>
+        <label>SSL 模式<select name="pg_sslmode"><option>prefer</option><option>require</option><option>verify-ca</option><option>verify-full</option><option>disable</option></select></label>
+      </div>
+      <div class="actions"><button type="button" data-test="postgres">测试 PostgreSQL 连接</button></div>
+      <h2>Redis</h2>
+      <div class="grid">
+        <label>主机<input name="redis_host" required autocomplete="off"></label>
+        <label>端口<input name="redis_port" type="number" min="1" max="65535" value="6379" required></label>
+        <label>数据库编号<input name="redis_database" type="number" min="0" max="255" value="0" required></label>
+        <label>密码（没有密码可留空）<input name="redis_password" type="password" autocomplete="new-password"></label>
+        <label><span>Redis TLS</span><input name="redis_tls" type="checkbox"></label>
+      </div>
+      <div class="actions"><button type="button" data-test="redis">测试 Redis 连接</button></div>
+      <h2>管理员账户</h2>
+      <div class="grid">
+        <label>邮箱<input name="admin_email" type="email" required autocomplete="email"></label>
+        <label>密码<input name="admin_password" type="password" required autocomplete="new-password"></label>
+      </div>
+      <div class="actions"><button type="submit">初始化 board</button></div>
+      <div id="status" role="status" aria-live="polite"></div>
+    </form>
+  </main>
+  <script>
+    const form = document.querySelector('#setup-form');
+    const status = document.querySelector('#status');
+    const value = name => form.elements.namedItem(name).value;
+    const connectionData = () => ({
+      postgres: { host: value('pg_host'), port: Number(value('pg_port')), database: value('pg_database'), user: value('pg_user'), password: value('pg_password'), sslmode: value('pg_sslmode'), max_connections: 32 },
+      redis: { host: value('redis_host'), port: Number(value('redis_port')), database: Number(value('redis_database')), password: value('redis_password') || null, tls: form.elements.namedItem('redis_tls').checked }
+    });
+    document.querySelectorAll('[data-test]').forEach(button => button.addEventListener('click', async () => {
+      status.textContent = '正在测试连接';
+      const data = connectionData();
+      const key = button.dataset.test;
+      try {
+        const response = await fetch(`/api/init/test/${key}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data[key]) });
+        status.textContent = response.ok ? '连接成功' : await response.text();
+      } catch {
+        status.textContent = '连接测试请求失败';
+      }
+    }));
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      status.textContent = '正在初始化';
+      const data = connectionData();
+      data.admin_email = value('admin_email');
+      data.admin_password = value('admin_password');
+      try {
+        const response = await fetch('/api/init/complete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data) });
+        status.textContent = response.ok ? '初始化完成，board 已就绪' : await response.text();
+      } catch {
+        status.textContent = '初始化请求失败';
+      }
+    });
+  </script>
+</body>
+</html>

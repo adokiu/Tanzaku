@@ -1,0 +1,2 @@
+ALTER TABLE users
+    ADD COLUMN balance_cents BIGINT NOT NULL DEFAULT 0;

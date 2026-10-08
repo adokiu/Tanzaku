@@ -1,0 +1,12 @@
+@font-face {
+  font-family: 'TCloud Number VF';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/fonts/TCloudNumberVF.ttf') format('truetype');
+}
+
+:root {
+  --font-family: "MiSans VF", sans-serif;
+  --font-family-number: "TCloud Number VF", "MiSans VF", sans-serif;
+}

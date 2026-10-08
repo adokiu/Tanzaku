@@ -1,0 +1,22 @@
+[package]
+name = "tz-pki"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+rcgen.workspace = true
+time.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio-rustls.workspace = true
+tracing.workspace = true
+x509-parser = "=0.18.1"
+uuid = { workspace = true, features = ["serde"] }
+
+[lints]
+workspace = true

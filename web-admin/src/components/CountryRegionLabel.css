@@ -1,0 +1,33 @@
+.region-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: inherit;
+  font-family: inherit;
+  line-height: 1.4;
+}
+
+.region-option__flag {
+  width: 28px;
+  height: 20px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  object-fit: cover;
+  display: block;
+}
+
+.region-option__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.region-option__code {
+  margin-left: 4px;
+  color: var(--color-gray-500);
+  font-size: 12px;
+  font-family: var(--font-family-number);
+}

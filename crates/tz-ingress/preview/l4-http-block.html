@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>请使用 HTTP 隧道</title>
+<style>
+  :root {
+    --ink: #1a1814;
+    --muted: #5c564c;
+    --line: #ddd6c8;
+    --paper: #f4f0e8;
+    --card: #fbf9f5;
+    --seal: #8f2d2a;
+    --seal-soft: #f3e4e1;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    color: var(--ink);
+    background:
+      radial-gradient(1200px 480px at 50% -120px, #fff 0%, transparent 60%),
+      var(--paper);
+    font-family: "Songti SC", "Noto Serif SC", "Source Han Serif SC", "STSong", "SimSun", serif;
+    display: flex;
+    align-items: safe center;
+    justify-content: center;
+    padding: 32px 16px;
+  }
+  .wrap { width: min(760px, 100%); }
+  .mark {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+    font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    font-size: 12px;
+    letter-spacing: 0.22em;
+    color: var(--muted);
+  }
+  .sheet {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    box-shadow: 0 1px 0 rgba(255,255,255,.8) inset, 0 24px 48px rgba(60, 48, 30, .06);
+    padding: 48px 52px 40px;
+    position: relative;
+    overflow: hidden;
+  }
+  .sheet::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 4px;
+    background: var(--seal);
+  }
+  .seal { width: 92px; height: 92px; margin-bottom: 22px; }
+  h1 {
+    margin: 0 0 12px;
+    font-size: 40px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    line-height: 1.2;
+  }
+  .lede {
+    margin: 0 0 28px;
+    font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    font-size: 16px;
+    line-height: 1.75;
+    color: var(--muted);
+  }
+  blockquote {
+    margin: 0 0 28px;
+    padding: 18px 20px 16px;
+    background: var(--seal-soft);
+    border-radius: 2px;
+  }
+  blockquote p { margin: 0; font-size: 16px; line-height: 1.85; }
+  blockquote cite {
+    display: block;
+    margin-top: 10px;
+    font-style: normal;
+    font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    color: var(--seal);
+  }
+  ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 14px; }
+  li {
+    display: grid;
+    grid-template-columns: 28px 1fr;
+    gap: 12px;
+    align-items: start;
+    font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    font-size: 15px;
+    line-height: 1.65;
+  }
+  .n {
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--line);
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    font-size: 13px;
+    color: var(--seal);
+  }
+  .note {
+    margin: 28px 0 0;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+    font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--muted);
+  }
+  @media (max-width: 640px) {
+    .sheet { padding: 32px 22px 28px; }
+    h1 { font-size: 30px; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="mark"><span>TANZAKU</span><span>访问拦截</span></div>
+    <article class="sheet">
+      <svg class="seal" viewBox="0 0 92 92" aria-hidden="true">
+        <circle cx="46" cy="46" r="42" fill="none" stroke="#8f2d2a" stroke-width="2"/>
+        <circle cx="46" cy="46" r="36" fill="none" stroke="#8f2d2a" stroke-width="1"/>
+        <text x="46" y="52" text-anchor="middle" fill="#8f2d2a" font-size="18" font-family="Songti SC, STSong, serif">已拦截</text>
+      </svg>
+      <h1>这个端口不能打开网站</h1>
+      <p class="lede">当前端口是 TCP 隧道，只转发字节，不能托管网页，也不能当作 HTTP 或 HTTPS 代理。</p>
+      <blockquote>
+        <p>用 TCP 或 UDP 隧道建站已被节点安全策略拦截。</p>
+        <cite>节点安全策略</cite>
+      </blockquote>
+      <ol>
+        <li><span class="n">1</span><span>浏览器直接访问这条 TCP 隧道会被拒绝。</span></li>
+        <li><span class="n">2</span><span>如需建站或反向代理，请在控制台创建 HTTP 协议隧道，并绑定域名。</span></li>
+        <li><span class="n">3</span><span>若只是转发自己的服务，请用客户端连接，不要用浏览器打开这个端口。</span></li>
+      </ol>
+    </article>
+  </div>
+</body>
+</html>
