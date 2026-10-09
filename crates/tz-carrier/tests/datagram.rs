@@ -30,6 +30,7 @@ fn node_config(tunnel_id: Uuid, client_id: Uuid, carrier: &str) -> tz_proto::Nod
         authorized_client_fingerprints: Vec::new(),
         certificate_fingerprint: None,
         tunnels: vec![tz_proto::TunnelSpec {
+            https_enabled: false,
             tunnel_id,
             revision: 1,
             protocol: "udp".into(),
