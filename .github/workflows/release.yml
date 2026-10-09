@@ -44,7 +44,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: linux-amd64,   os: ubuntu-latest,  target: x86_64-unknown-linux-musl,  cross: true }
+          # amd64 用原生 musl-gcc 构建：cross 的 x86_64-musl 镜像里 aws-lc-sys 的 cmake 会卡死。
+          - { name: linux-amd64,   os: ubuntu-latest,  target: x86_64-unknown-linux-musl,  musl: true }
           - { name: linux-386,     os: ubuntu-latest,  target: i686-unknown-linux-musl,    cross: true }
           - { name: linux-arm64,   os: ubuntu-latest,  target: aarch64-unknown-linux-musl, cross: true }
           - { name: linux-mips,    os: ubuntu-latest,  target: mips-unknown-linux-musl,    cross: true, tier3: true }
@@ -71,6 +72,9 @@ jobs:
           elif [[ "${{ matrix.cross }}" != "true" ]]; then
             rustup target add ${{ matrix.target }}
           fi
+          if [[ "${{ matrix.musl }}" == "true" ]]; then
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+          fi
 
       - uses: ilammy/setup-nasm@v1
         if: runner.os == 'Windows'
@@ -86,6 +90,8 @@ jobs:
 
       - name: Build
         shell: bash
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
         run: |
           if [[ "${{ matrix.tier3 }}" == "true" ]]; then
             cross +nightly build --release --target ${{ matrix.target }} -p tz-client -p tz-server
@@ -118,8 +124,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: linux-amd64, target: x86_64-unknown-linux-musl }
-          - { name: linux-arm64, target: aarch64-unknown-linux-musl }
+          - { name: linux-amd64, target: x86_64-unknown-linux-musl, musl: true }
+          - { name: linux-arm64, target: aarch64-unknown-linux-musl, cross: true }
     steps:
       - uses: actions/checkout@v4
       - name: Set version
@@ -136,15 +142,28 @@ jobs:
           npm ci
           npm run build
       - name: Rust toolchain
-        run: rustup show
+        run: |
+          rustup show
+          if [[ "${{ matrix.musl }}" == "true" ]]; then
+            rustup target add ${{ matrix.target }}
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+          fi
       - uses: taiki-e/install-action@v2
+        if: matrix.cross == true
         with:
           tool: cross
       - uses: Swatinem/rust-cache@v2
         with:
           key: board-${{ matrix.target }}
       - name: Build
-        run: cross build --release --target ${{ matrix.target }} -p tz-board
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: |
+          if [[ "${{ matrix.cross }}" == "true" ]]; then
+            cross build --release --target ${{ matrix.target }} -p tz-board
+          else
+            cargo build --release --target ${{ matrix.target }} -p tz-board
+          fi
       - name: Package
         run: |
           mkdir -p out
