@@ -79,7 +79,7 @@ pub fn default_config_path() -> PathBuf {
 /// 命令行 `-c` / `--config` > 环境变量 `TANZAKU_CONFIG` > [`default_config_path`].
 pub fn resolve_config_path() -> anyhow::Result<PathBuf> {
     let mut args = env::args_os().skip(1);
-    while let Some(arg) = args.next() {
+    if let Some(arg) = args.next() {
         let flag = arg.as_os_str();
         if flag == OsStr::new("-c") || flag == OsStr::new("--config") {
             let path = args
