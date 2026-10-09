@@ -54,10 +54,6 @@ pub fn admin_router() -> Router<Arc<AppState>> {
             "/api/v1/admin/nodes/{node_id}/token",
             get(get_node_token).post(reset_node_token),
         )
-        .route(
-            "/api/v1/admin/nodes/{node_id}/token",
-            get(get_node_token).post(reset_node_token),
-        )
         .merge(users::admin_router())
         .merge(plans::admin_router())
         .merge(clients::admin_router())
