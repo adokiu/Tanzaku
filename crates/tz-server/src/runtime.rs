@@ -1,9 +1,10 @@
+use portable_atomic::AtomicU64;
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::Ordering,
         Arc, Mutex,
     },
 };
@@ -42,7 +43,7 @@ struct ManagedIngress {
     http_hosts: Arc<ArcSwap<DedicatedHttpHosts>>,
 }
 
-static INGRESS_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static INGRESS_GENERATION: portable_atomic::AtomicU64 = portable_atomic::AtomicU64::new(0);
 
 struct SharedListener {
     stop: IngressShutdownHandle,
@@ -255,6 +256,7 @@ impl NodeRuntime {
 
         let mut last_revision = 0_i64;
         let mut last_firewall_key = String::new();
+        let mut last_block_http_on_l4 = self.guard.block_http_on_l4();
         let mut wait_hint = std::time::Instant::now()
             .checked_sub(std::time::Duration::from_secs(10))
             .unwrap_or_else(std::time::Instant::now);
@@ -271,19 +273,46 @@ impl NodeRuntime {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 continue;
             }
-            if config.revision != last_revision {
-                tracing::info!(
-                    node_id = %config.node_id,
-                    revision = config.revision,
-                    tunnels = config.tunnels.len(),
-                    http_routes = config.http_domain_routes.len(),
-                    authorized_clients = config.authorized_client_fingerprints.len(),
-                    "node config revision applied"
-                );
-                last_revision = config.revision;
-                self.guard.reload(&config.guard_policy);
-                // 策略 revision 变化时强制重同步防火墙（端口集合在下方每轮也会比对）。
-                last_firewall_key.clear();
+            let guard_changed =
+                self.guard.policy_snapshot().as_ref() != &config.guard_policy;
+            if config.revision != last_revision || guard_changed {
+                if config.revision != last_revision {
+                    tracing::info!(
+                        node_id = %config.node_id,
+                        revision = config.revision,
+                        tunnels = config.tunnels.len(),
+                        http_routes = config.http_domain_routes.len(),
+                        authorized_clients = config.authorized_client_fingerprints.len(),
+                        "node config revision applied"
+                    );
+                    last_revision = config.revision;
+                    // 策略 revision 变化时强制重同步防火墙（端口集合在下方每轮也会比对）。
+                    last_firewall_key.clear();
+                } else if guard_changed {
+                    tracing::info!(
+                        node_id = %config.node_id,
+                        "guard policy reloaded without revision bump"
+                    );
+                }
+                if guard_changed {
+                    self.guard.reload(&config.guard_policy);
+                    let block_http_on_l4 = self.guard.block_http_on_l4();
+                    if block_http_on_l4 && !last_block_http_on_l4 {
+                        for tunnel in &config.tunnels {
+                            if tunnel.protocol != "tcp" {
+                                continue;
+                            }
+                            if let Some(entry) = self.tunnel_traffic.get(&tunnel.tunnel_id) {
+                                tracing::info!(
+                                    tunnel_id = %tunnel.tunnel_id,
+                                    "kicking active tcp connections after L4 HTTP block enabled"
+                                );
+                                entry.kick_connections();
+                            }
+                        }
+                    }
+                    last_block_http_on_l4 = block_http_on_l4;
+                }
             }
             self.filing.store(Arc::new(tz_ingress::filing::FilingGate {
                 enabled: config.cn_http_filing,
@@ -428,6 +457,7 @@ impl NodeRuntime {
                     port,
                     target_host,
                     target_port,
+                    l4_block_cert_resolver: Some(self.sni_resolver.clone()),
                     live_sessions: self.tunnel_sessions.clone(),
                     client_session: session,
                     guard: self.guard.clone(),
@@ -444,6 +474,7 @@ impl NodeRuntime {
                     on_ingress_bound: Some(on_ingress_bound),
                     http_hosts,
                     filing: self.filing.clone(),
+                    https_enabled: tunnel.protocol == "http" && tunnel.https_enabled,
                 };
                 let handle = self.handle.clone();
                 let tunnel_id = tunnel.tunnel_id;

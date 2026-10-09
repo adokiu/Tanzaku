@@ -1,57 +1,192 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { ChevronLeft, ChevronRight, LayoutDashboard, LogOut, Moon, Network, Package, Server, Shield, Sun, Users, Workflow } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
+import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  CircleUser,
+  ClipboardList,
+  CreditCard,
+  FileBadge,
+  Gauge,
+  History,
+  Lock,
+  Menu,
+  LayoutDashboard,
+  LogOut,
+  MonitorSmartphone,
+  Moon,
+  Network,
+  Route,
+  ShieldAlert,
+  ShoppingBag,
+  Sun,
+  Wallet,
+  X,
+} from 'lucide-react'
 import apiClient from '@/api/client'
+import { SiteFooter } from '@/components/SiteFooter'
 import { useAuthStore } from '@/stores/auth'
+import { displaySiteTitle, useBrandingStore } from '@/stores/branding'
 import { useThemeStore } from '@/stores/theme'
 import './AppLayout.css'
 
-type Audience = 'admin' | 'user'
-type Item = { path: string; label: string; icon: typeof LayoutDashboard }
-type Group = { id: string; label: string; icon: typeof LayoutDashboard; items: Item[] }
+type IconType = typeof LayoutDashboard
+type NavItem = { path: string; labelKey: string; icon: IconType }
+type NavGroup = { id: string; labelKey: string; icon: IconType; items: NavItem[] }
 
-const adminGroups: Group[] = [
-  { id: 'overview', label: '概览', icon: LayoutDashboard, items: [{ path: '/dashboard', label: '概览', icon: LayoutDashboard }] },
-  { id: 'nodes', label: '节点管理', icon: Server, items: [
-    { path: '/nodes', label: 'Server 节点', icon: Server },
-    { path: '/node-groups', label: '节点组', icon: Network },
-  ] },
-  { id: 'users', label: '用户与套餐', icon: Users, items: [
-    { path: '/users', label: '用户管理', icon: Users },
-    { path: '/plans', label: '套餐管理', icon: Package },
-  ] },
-  { id: 'tunnels', label: '转发管理', icon: Network, items: [
-    { path: '/clients', label: 'Client 管理', icon: Workflow },
-    { path: '/tunnels', label: '隧道管理', icon: Network },
-    { path: '/certificates', label: '证书管理', icon: Shield },
-  ] },
-  { id: 'system', label: '系统管理', icon: Shield, items: [
-    { path: '/settings', label: '系统设置', icon: LayoutDashboard },
-    { path: '/security', label: '节点防护', icon: Shield },
-    { path: '/audit-logs', label: '审计日志', icon: LayoutDashboard },
-  ] },
-]
+const MOBILE_MQ = '(max-width: 800px)'
 
-const userGroups: Group[] = [
-  { id: 'overview', label: '概览', icon: LayoutDashboard, items: [{ path: '/overview', label: '概览', icon: LayoutDashboard }] },
-  { id: 'plans', label: '套餐', icon: Package, items: [{ path: '/plans', label: '购买套餐', icon: Package }] },
-  { id: 'tunnels', label: '我的转发', icon: Network, items: [
-    { path: '/clients', label: '我的 Client', icon: Workflow },
-    { path: '/tunnels', label: '我的隧道', icon: Network },
-    { path: '/tunnels/new', label: '创建隧道', icon: Network },
-  ] },
-]
+function groupForPath(groups: NavGroup[], pathname: string): string | undefined {
+  return groups.find((group) => group.items.some((item) => item.path === pathname))?.id
+}
 
-export default function AppLayout({ audience }: { audience: Audience }) {
+function itemForPath(groups: NavGroup[], pathname: string): NavItem | undefined {
+  for (const group of groups) {
+    const hit = group.items.find((item) => item.path === pathname)
+    if (hit) return hit
+  }
+  return undefined
+}
+
+function NavSubLink({ item, label, onNavigate }: { item: NavItem; label: string; onNavigate?: () => void }) {
+  const ItemIcon = item.icon
+  return (
+    <NavLink
+      to={item.path}
+      className={({ isActive }) => `nav-sub-item menu-item ${isActive ? 'active' : ''}`}
+      onClick={onNavigate}
+    >
+      <ItemIcon size={20} className="menu-item-icon" />
+      <span className="menu-item-label">{label}</span>
+    </NavLink>
+  )
+}
+
+function useIsMobile() {
+  const [mobile, setMobile] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia(MOBILE_MQ).matches : false,
+  )
+  useEffect(() => {
+    const mq = window.matchMedia(MOBILE_MQ)
+    const onChange = () => setMobile(mq.matches)
+    onChange()
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+  return mobile
+}
+
+export default function AppLayout() {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const location = useLocation()
-  const groups = audience === 'admin' ? adminGroups : userGroups
-  const activeGroup = groups.find((group) => group.items.some((item) => item.path === location.pathname))?.id
+  const contentRef = useRef<HTMLDivElement>(null)
+  const isMobile = useIsMobile()
+  const groups = useMemo<NavGroup[]>(() => [
+    {
+      id: 'dashboard',
+      labelKey: 'nav.groupDashboard',
+      icon: LayoutDashboard,
+      items: [{ path: '/dashboard', labelKey: 'nav.overview', icon: Gauge }],
+    },
+    {
+      id: 'forwarding',
+      labelKey: 'nav.groupForwarding',
+      icon: Network,
+      items: [
+        { path: '/clients', labelKey: 'nav.clients', icon: MonitorSmartphone },
+        { path: '/tunnels', labelKey: 'nav.tunnels', icon: Route },
+        { path: '/certificates', labelKey: 'nav.certificates', icon: FileBadge },
+        { path: '/security/events', labelKey: 'nav.securityEvents', icon: ShieldAlert },
+      ],
+    },
+    {
+      id: 'subscription',
+      labelKey: 'nav.groupSubscription',
+      icon: CreditCard,
+      items: [
+        { path: '/plans', labelKey: 'nav.plans', icon: ShoppingBag },
+        { path: '/orders', labelKey: 'nav.orders', icon: ClipboardList },
+        { path: '/ledger', labelKey: 'nav.ledger', icon: Wallet },
+      ],
+    },
+    {
+      id: 'account',
+      labelKey: 'nav.groupAccount',
+      icon: CircleUser,
+      items: [
+        { path: '/account/security', labelKey: 'nav.accountSecurity', icon: Lock },
+        { path: '/audit-logs', labelKey: 'nav.auditLogs', icon: History },
+      ],
+    },
+  ], [])
+
   const account = useAuthStore((state) => state.account)
   const setAccount = useAuthStore((state) => state.setAccount)
   const theme = useThemeStore((state) => state.theme)
   const setTheme = useThemeStore((state) => state.setTheme)
   const [collapsed, setCollapsed] = useState(false)
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [flyoutGroupId, setFlyoutGroupId] = useState<string | null>(null)
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const flyoutRef = useRef<HTMLDivElement>(null)
+
+  const branding = useBrandingStore((state) => state.branding)
+  const loadBranding = useBrandingStore((state) => state.load)
+
+  const currentPageLabel = useMemo(() => {
+    const item = itemForPath(groups, location.pathname)
+    return item ? t(item.labelKey) : t('nav.brandUser')
+  }, [groups, location.pathname, t])
+
+  useEffect(() => {
+    void loadBranding()
+  }, [loadBranding])
+
+  useEffect(() => {
+    const siteTitle = displaySiteTitle(branding, t('login.fallbackTitle'))
+    document.title = `${currentPageLabel} - ${siteTitle}`
+  }, [branding, currentPageLabel, t])
+
+  useEffect(() => {
+    const activeId = groupForPath(groups, location.pathname)
+    if (activeId) {
+      setExpanded((current) => ({ ...current, [activeId]: true }))
+      setFlyoutGroupId(null)
+    }
+  }, [location.pathname, groups])
+
+  useEffect(() => {
+    contentRef.current?.scrollTo({ top: 0, left: 0 })
+    setMobileMenuOpen(false)
+  }, [location.pathname])
+
+  useEffect(() => {
+    if (!isMobile) setMobileMenuOpen(false)
+  }, [isMobile])
+
+  useEffect(() => {
+    if (!mobileMenuOpen) return
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = prev
+    }
+  }, [mobileMenuOpen])
+
+  useEffect(() => {
+    if (!flyoutGroupId) return
+    function onPointerDown(event: MouseEvent) {
+      const target = event.target as Node
+      if (flyoutRef.current?.contains(target)) return
+      if ((target as Element).closest?.('.nav-group-trigger')) return
+      setFlyoutGroupId(null)
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    return () => document.removeEventListener('mousedown', onPointerDown)
+  }, [flyoutGroupId])
 
   async function logout() {
     try {
@@ -60,6 +195,7 @@ export default function AppLayout({ audience }: { audience: Audience }) {
       setAccount(null)
     } finally {
       setAccount(null)
+      setMobileMenuOpen(false)
       navigate('/login', { replace: true })
     }
   }
@@ -68,37 +204,155 @@ export default function AppLayout({ audience }: { audience: Audience }) {
     setTheme(theme === 'light' ? 'dark' : theme === 'dark' ? 'system' : 'light')
   }
 
+  function toggleGroup(groupId: string) {
+    if (!isMobile && collapsed) {
+      setFlyoutGroupId((current) => (current === groupId ? null : groupId))
+      return
+    }
+    setExpanded((current) => ({ ...current, [groupId]: !current[groupId] }))
+  }
+
+  const flyoutGroup = flyoutGroupId ? groups.find((group) => group.id === flyoutGroupId) : undefined
+
+  function renderNav(opts: { collapsedMode: boolean; onNavigate?: () => void }) {
+    const { collapsedMode, onNavigate } = opts
+    return (
+      <>
+        {groups.map((group) => {
+          const Icon = group.icon
+          const isOpen = collapsedMode ? flyoutGroupId === group.id : Boolean(expanded[group.id])
+          return (
+            <div key={group.id} className={`nav-group ${isOpen ? 'is-open' : ''}`}>
+              <button
+                type="button"
+                className="nav-group-trigger menu-item"
+                aria-expanded={isOpen}
+                title={t(group.labelKey)}
+                onClick={() => toggleGroup(group.id)}
+              >
+                <Icon size={20} className="menu-item-icon" />
+                {!collapsedMode && (
+                  <>
+                    <span className="menu-item-label">{t(group.labelKey)}</span>
+                    <ChevronDown size={18} className={`nav-group-chevron ${isOpen ? 'is-open' : ''}`} aria-hidden />
+                  </>
+                )}
+              </button>
+              {!collapsedMode && (
+                <div className={`nav-sub-wrap ${isOpen ? 'is-open' : ''}`}>
+                  <div className="nav-sub-inner">
+                    <ul className="nav-sub-list">
+                      {group.items.map((item) => (
+                        <li key={item.path}>
+                          <NavSubLink item={item} label={t(item.labelKey)} onNavigate={onNavigate} />
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
+            </div>
+          )
+        })}
+        <div className="sidebar-spacer" />
+        <ul className="menu-list menu-list-footer">
+          <li>
+            <button type="button" className="menu-item" onClick={toggleTheme} title={t('nav.themeToggle')}>
+              {theme === 'dark' ? <Moon size={18} className="menu-item-icon" /> : <Sun size={18} className="menu-item-icon" />}
+              {!collapsedMode && <span className="menu-item-label">{t('nav.themeToggle')}</span>}
+            </button>
+          </li>
+          <li>
+            <button type="button" className="menu-item" onClick={() => void logout()} title={t('nav.logout')}>
+              <LogOut size={18} className="menu-item-icon" />
+              {!collapsedMode && <span className="menu-item-label">{t('nav.logout')}</span>}
+            </button>
+          </li>
+        </ul>
+      </>
+    )
+  }
+
   return (
-    <div className="app-shell">
-      <aside className={`sidebar-container ${collapsed ? 'collapsed' : 'expanded'}`}>
+    <div className={`app-shell ambient-surface ${isMobile ? 'app-shell--mobile' : ''} ${mobileMenuOpen ? 'app-shell--menu-open' : ''}`}>
+      <aside className={`sidebar-container sidebar-container--desktop ${collapsed ? 'collapsed' : 'expanded'}`}>
         <div className={`sidebar-header ${collapsed ? 'collapsed-header' : ''}`}>
           {!collapsed ? <div className="sidebar-logo-text">Tanzaku</div> : <span className="sidebar-logo-text">T</span>}
-          {!collapsed && <div className="sidebar-search">{audience === 'admin' ? '管理控制台' : '用户中心'}</div>}
         </div>
-        <div className="sidebar-menus">
-          <nav className="sidebar-primary">
-            <ul className="menu-list">
-              {groups.map((group) => {
-                const Icon = group.icon
-                return <li key={group.id}><button type="button" className={`menu-item ${activeGroup === group.id ? 'active' : ''}`} title={group.label} onClick={() => navigate(group.items[0].path)}><Icon size={18} className="menu-item-icon" />{!collapsed && <span className="menu-item-label">{group.label}</span>}</button></li>
-              })}
+        <nav className="sidebar-nav" aria-label={t('nav.brandUser')}>
+          {renderNav({ collapsedMode: collapsed })}
+        </nav>
+        {collapsed && flyoutGroup && (
+          <div ref={flyoutRef} className="sidebar-flyout" role="menu">
+            <p className="sidebar-flyout-title">{t(flyoutGroup.labelKey)}</p>
+            <ul className="nav-sub-list">
+              {flyoutGroup.items.map((item) => (
+                <li key={item.path}>
+                  <NavSubLink item={item} label={t(item.labelKey)} onNavigate={() => setFlyoutGroupId(null)} />
+                </li>
+              ))}
             </ul>
-            <div className="sidebar-spacer" />
-            <ul className="menu-list">
-              <li><button type="button" className="menu-item" onClick={toggleTheme} title="切换主题">{theme === 'dark' ? <Moon size={18} className="menu-item-icon" /> : <Sun size={18} className="menu-item-icon" />}{!collapsed && <span className="menu-item-label">主题</span>}</button></li>
-              <li><button type="button" className="menu-item" onClick={logout} title="退出登录"><LogOut size={18} className="menu-item-icon" />{!collapsed && <span className="menu-item-label">退出登录</span>}</button></li>
-            </ul>
-          </nav>
-          {!collapsed && <nav className="sidebar-secondary"><ul className="secondary-menu-list">{groups.flatMap((group) => group.items).map((item) => {
-            const Icon = item.icon
-            return <li key={item.path}><NavLink to={item.path} className={({ isActive }) => `secondary-menu-item ${isActive ? 'active' : ''}`}><Icon size={16} className="secondary-menu-item-icon" /><span>{item.label}</span></NavLink></li>
-          })}</ul></nav>}
-        </div>
-        <button type="button" className="sidebar-collapse-btn" onClick={() => setCollapsed((value) => !value)} aria-label={collapsed ? '展开菜单' : '收起菜单'}>{collapsed ? <ChevronRight size={20} /> : <ChevronLeft size={20} />}</button>
+          </div>
+        )}
+        <button
+          type="button"
+          className="sidebar-collapse-btn"
+          onClick={() => {
+            setCollapsed((value) => !value)
+            setFlyoutGroupId(null)
+          }}
+          aria-label={collapsed ? t('nav.expandMenu') : t('nav.collapseMenu')}
+        >
+          {collapsed ? <ChevronRight size={20} /> : <ChevronLeft size={20} />}
+        </button>
       </aside>
+
+      <div
+        className={`mobile-nav-backdrop ${mobileMenuOpen ? 'is-open' : ''}`}
+        onClick={() => setMobileMenuOpen(false)}
+        aria-hidden={!mobileMenuOpen}
+      />
+      <aside
+        className={`mobile-nav-drawer ${mobileMenuOpen ? 'is-open' : ''}`}
+        aria-hidden={!mobileMenuOpen}
+        aria-label={t('nav.brandUser')}
+      >
+        <div className="sidebar-header">
+          <div className="sidebar-logo-text">Tanzaku</div>
+          <button
+            type="button"
+            className="mobile-nav-drawer__close"
+            onClick={() => setMobileMenuOpen(false)}
+            aria-label={t('nav.collapseMenu')}
+          >
+            <X size={22} />
+          </button>
+        </div>
+        {account?.email ? <p className="mobile-nav-drawer__email">{account.email}</p> : null}
+        <nav className="sidebar-nav">{renderNav({ collapsedMode: false, onNavigate: () => setMobileMenuOpen(false) })}</nav>
+      </aside>
+
       <main className="app-main">
-        <header className="app-topbar"><span>{account?.email}</span></header>
-        <div className="app-content"><Outlet /></div>
+        {isMobile ? (
+          <header className="mobile-topbar">
+            <h1 className="mobile-topbar__title">{currentPageLabel}</h1>
+            <button
+              type="button"
+              className="mobile-topbar__menu"
+              onClick={() => setMobileMenuOpen((open) => !open)}
+              aria-label={mobileMenuOpen ? t('nav.collapseMenu') : t('nav.expandMenu')}
+              aria-expanded={mobileMenuOpen}
+            >
+              {mobileMenuOpen ? <X size={22} /> : <Menu size={22} />}
+            </button>
+          </header>
+        ) : (
+          <header className="app-topbar"><span>{account?.email}</span></header>
+        )}
+        <div className="app-content" ref={contentRef}>
+          <Outlet />
+          <SiteFooter />
+        </div>
       </main>
     </div>
   )

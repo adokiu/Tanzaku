@@ -1,7 +1,8 @@
+use portable_atomic::AtomicU64;
 use std::{
     net::{IpAddr, SocketAddr},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::Ordering,
         Arc,
     },
 };

@@ -1,8 +1,9 @@
+use portable_atomic::AtomicU64;
 use std::{
     io,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::Ordering,
     },
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};

@@ -16,7 +16,7 @@ interface PageData {
   page_size?: number
 }
 
-export default function ResourcePage({ titleKey, endpoint }: { titleKey: string; endpoint: string }) {
+export default function ResourcePage({ endpoint }: { endpoint: string }) {
   const { t, i18n } = useTranslation()
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
@@ -42,7 +42,6 @@ export default function ResourcePage({ titleKey, endpoint }: { titleKey: string;
   return (
     <section className="page-container">
       <PageListHeader
-        title={t(titleKey)}
         actions={(
           <Button variant="secondary" size="sm" onClick={() => query.refetch()} disabled={query.isFetching}>
             <RefreshCw size={16} className={query.isFetching ? 'animate-spin' : ''} />

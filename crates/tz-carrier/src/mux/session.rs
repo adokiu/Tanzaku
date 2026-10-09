@@ -1,3 +1,4 @@
+use portable_atomic::AtomicU64;
 use super::frame::{decode_open, encode_open, FrameType, MuxFrame};
 use super::stream;
 use super::{
@@ -9,7 +10,7 @@ use bytes::{Bytes, BytesMut};
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc,
     },
 };

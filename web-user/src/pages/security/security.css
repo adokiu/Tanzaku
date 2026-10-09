@@ -1,0 +1,106 @@
+.policy-summary-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.policy-row-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.data-table-link-btn--danger {
+  color: hsl(var(--destructive));
+}
+
+.policy-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--sidebar-border, hsl(var(--border)));
+}
+
+.policy-section:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.policy-section__title {
+  margin: 4px 0 0;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: hsl(var(--muted-foreground));
+  text-transform: none;
+}
+
+.policy-section__body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.policy-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.policy-label__name {
+  line-height: 1.3;
+}
+
+.policy-info {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  color: hsl(var(--muted-foreground));
+  cursor: help;
+  outline: none;
+}
+
+.policy-info:hover,
+.policy-info:focus-visible {
+  color: hsl(var(--foreground));
+  background: hsl(var(--muted) / 0.45);
+}
+
+.policy-info__tip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  z-index: 40;
+  width: max-content;
+  max-width: 260px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--sidebar-border, hsl(var(--border)));
+  background: var(--color-white, hsl(var(--background)));
+  color: hsl(var(--foreground));
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+  white-space: normal;
+}
+
+.policy-info:hover .policy-info__tip,
+.policy-info:focus-visible .policy-info__tip {
+  opacity: 1;
+  visibility: visible;
+}

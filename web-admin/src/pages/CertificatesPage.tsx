@@ -5,6 +5,8 @@ import { useTranslation } from 'react-i18next'
 import apiClient from '@/api/client'
 import { getPage, getPageItems } from '@/api/page'
 import { Button } from '@/components/Button'
+import { CellTooltip } from '@/components/CellTooltip/CellTooltip'
+import { CertExpiryTag } from '@/components/CertExpiryTag'
 import { type Column } from '@/components/DataTable'
 import { EntityList } from '@/components/EntityListPage/EntityListPage'
 import { EntityIdCell, ENTITY_LIST_COL_ID } from '@/components/EntityListLeadingCells'
@@ -13,8 +15,9 @@ import { GenericSidebar } from '@/components/GenericSidebar/GenericSidebar'
 import { PageListHeader } from '@/components/PageListHeader'
 import { Select } from '@/components/Select/Select'
 import { translateApiError } from '@/i18n/apiError'
+import { toast } from '@/stores/toast'
 import { translateField } from '@/i18n/fieldLabel'
-import { formatDateTime } from '@/utils/formatDateTime'
+import { formatDateYmd } from '@/utils/formatDateTime'
 
 type CertificateRow = {
   id: string
@@ -23,6 +26,7 @@ type CertificateRow = {
   domains: string[]
   not_before: string
   not_after: string
+  issuer: string
   source: string
   created_at: string
 }
@@ -45,8 +49,6 @@ export default function CertificatesPage() {
   const [ownerId, setOwnerId] = useState(SYSTEM_OWNER)
   const [certificatePem, setCertificatePem] = useState('')
   const [privateKeyPem, setPrivateKeyPem] = useState('')
-  const [formError, setFormError] = useState('')
-
   const fetchCertificates = useCallback(
     (params: { page: number; page_size: number }) => getPage<CertificateRow>('/v1/admin/certificates', params),
     [],
@@ -80,8 +82,9 @@ export default function CertificatesPage() {
     onSuccess: async () => {
       setSidebarOpen(false)
       await invalidate()
+      toast.success(t('common.createSuccess'))
     },
-    onError: (error) => setFormError(translateApiError(t, error)),
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const update = useMutation({
@@ -96,16 +99,20 @@ export default function CertificatesPage() {
     onSuccess: async () => {
       setSidebarOpen(false)
       await invalidate()
+      toast.success(t('common.saveSuccess'))
     },
-    onError: (error) => setFormError(translateApiError(t, error)),
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const remove = useMutation({
     mutationFn: async (id: string) => {
       await apiClient.delete(`/v1/admin/certificates/${id}`)
     },
-    onSuccess: invalidate,
-    onError: (error) => window.alert(translateApiError(t, error)),
+    onSuccess: async () => {
+      await invalidate()
+      toast.success(t('common.deleteSuccess'))
+    },
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const openCreate = useCallback(() => {
@@ -113,7 +120,6 @@ export default function CertificatesPage() {
     setOwnerId(SYSTEM_OWNER)
     setCertificatePem('')
     setPrivateKeyPem('')
-    setFormError('')
     setSidebarOpen(true)
   }, [])
 
@@ -122,20 +128,18 @@ export default function CertificatesPage() {
     setOwnerId(row.owner_user_id ?? SYSTEM_OWNER)
     setCertificatePem('')
     setPrivateKeyPem('')
-    setFormError('')
     setSidebarOpen(true)
   }, [])
 
   function submitForm() {
-    setFormError('')
     const hasPem = certificatePem.trim().length > 0
     const hasKey = privateKeyPem.trim().length > 0
     if (!editingId && (!hasPem || !hasKey)) {
-      setFormError(t('certificates.materialRequired'))
+      toast.error(t('certificates.materialRequired'))
       return
     }
     if (editingId && hasPem !== hasKey) {
-      setFormError(t('certificates.materialPair'))
+      toast.error(t('certificates.materialPair'))
       return
     }
     if (editingId) update.mutate()
@@ -158,39 +162,58 @@ export default function CertificatesPage() {
         title: t('certificates.owner'),
         width: 220,
         render: (row) => (
-          <span className="data-table-cell" title={row.owner_email ?? t('certificates.systemOwner')}>
+          <CellTooltip tip={row.owner_email ?? t('certificates.systemOwner')} className="data-table-cell">
             {row.owner_email ?? t('certificates.systemOwner')}
-          </span>
+          </CellTooltip>
         ),
       },
       {
         key: 'domains',
         title: t('certificates.domains'),
         render: (row) => (
-          <span className="data-table-cell" title={row.domains.join('\n')}>
+          <CellTooltip tip={row.domains.join('\n') || undefined} className="data-table-cell">
             {row.domains.join('、') || '—'}
-          </span>
+          </CellTooltip>
+        ),
+      },
+      {
+        key: 'issuer',
+        title: t('certificates.issuer'),
+        width: 200,
+        render: (row) => (
+          <CellTooltip tip={row.issuer || undefined} className="data-table-cell">
+            {row.issuer?.trim() || '—'}
+          </CellTooltip>
         ),
       },
       {
         key: 'not_after',
         title: t('certificates.notAfter'),
-        width: 180,
-        render: (row) => {
-          const expired = Date.parse(row.not_after) <= Date.now()
-          return (
-            <span className={`data-table-cell${expired ? ' text-apple-red' : ''}`} title={formatDateTime(row.not_before)}>
-              {formatDateTime(row.not_after)}
-              {expired ? ` · ${t('certificates.expired')}` : ''}
-            </span>
-          )
-        },
+        width: 120,
+        fixedWidth: true,
+        render: (row) => (
+          <CellTooltip
+            tip={`${t('certificates.notBefore')}: ${formatDateYmd(row.not_before) || '—'}`}
+            className="data-table-cell"
+          >
+            <CertExpiryTag notAfter={row.not_after} />
+          </CellTooltip>
+        ),
       },
       {
         key: 'source',
         title: t('certificates.source'),
         width: 100,
-        render: (row) => <span className="data-table-cell">{sourceLabel(t, row.source)}</span>,
+        fixedWidth: true,
+        render: (row) => (
+          <span
+            className={`data-table-tag entity-list-cell__status-tag ${
+              row.source === 'acme' ? 'data-table-tag--cert-acme' : 'data-table-tag--cert-manual'
+            }`}
+          >
+            {sourceLabel(t, row.source)}
+          </span>
+        ),
       },
       {
         key: 'actions',
@@ -219,7 +242,6 @@ export default function CertificatesPage() {
   return (
     <section className="page-container page-container--entity-list">
       <PageListHeader
-        title={t('pages.certificates')}
         actions={(
           <>
             <Button size="sm" onClick={openCreate}>
@@ -253,27 +275,20 @@ export default function CertificatesPage() {
         )}
       >
         <FormStack>
-          {formError ? <p className="sidebar-form-error" role="alert">{formError}</p> : null}
           <FormField label={t('certificates.owner')}>
             <Select
               value={ownerId}
               options={ownerOptions}
               placeholder={t('certificates.ownerPlaceholder')}
               searchable
-              onChange={(value) => {
-                setOwnerId(String(value))
-                setFormError('')
-              }}
+              onChange={(value) => setOwnerId(String(value))}
             />
           </FormField>
           <FormField label={t('certificates.pem')} required={!editingId} hint={editingId ? t('certificates.pemHint') : t('certificates.domainsParsed')}>
             <textarea
               className="apple-input w-full min-h-[140px] font-mono text-xs"
               value={certificatePem}
-              onChange={(event) => {
-                setCertificatePem(event.target.value)
-                setFormError('')
-              }}
+              onChange={(event) => setCertificatePem(event.target.value)}
               spellCheck={false}
               placeholder="-----BEGIN CERTIFICATE-----"
             />
@@ -282,10 +297,7 @@ export default function CertificatesPage() {
             <textarea
               className="apple-input w-full min-h-[140px] font-mono text-xs"
               value={privateKeyPem}
-              onChange={(event) => {
-                setPrivateKeyPem(event.target.value)
-                setFormError('')
-              }}
+              onChange={(event) => setPrivateKeyPem(event.target.value)}
               spellCheck={false}
               placeholder="-----BEGIN PRIVATE KEY-----"
             />

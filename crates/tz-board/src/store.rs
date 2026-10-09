@@ -174,7 +174,36 @@ pub async fn initialize_database(pool: &PgPool, email: &str, password: &str) -> 
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
-        "INSERT INTO system_settings (key, value) VALUES ('registration_enabled', 'false'::jsonb), ('node_host_metrics_interval_secs', '1'::jsonb), ('client_ip_geo_provider', '\"ipinfo\"'::jsonb) ON CONFLICT (key) DO NOTHING",
+        "INSERT INTO system_settings (key, value) VALUES
+         ('registration_enabled', 'false'::jsonb),
+         ('node_host_metrics_interval_secs', '1'::jsonb),
+         ('client_ip_geo_provider', '\"ipinfo\"'::jsonb),
+         ('site_title', '\"\"'::jsonb),
+         ('site_subtitle', '\"\"'::jsonb),
+         ('site_description', '\"\"'::jsonb),
+         ('site_url', '\"\"'::jsonb),
+         ('trial_plan_id', 'null'::jsonb),
+         ('trial_duration_days', '7'::jsonb),
+         ('traffic_reset_mode', '\"month_purchase\"'::jsonb),
+         ('security_email_verification', 'false'::jsonb),
+         ('security_safe_mode', 'false'::jsonb),
+         ('security_email_suffix_whitelist_enabled', 'false'::jsonb),
+         ('security_email_suffix_whitelist', '[]'::jsonb),
+         ('security_captcha_enabled', 'false'::jsonb),
+         ('security_ip_register_limit_enabled', 'false'::jsonb),
+         ('security_ip_register_max_count', '3'::jsonb),
+         ('security_ip_register_window_minutes', '60'::jsonb),
+         ('security_password_attempt_limit_enabled', 'true'::jsonb),
+         ('security_password_attempt_max', '5'::jsonb),
+         ('security_password_lock_minutes', '0'::jsonb),
+         ('mail_smtp_host', '\"\"'::jsonb),
+         ('mail_smtp_port', '465'::jsonb),
+         ('mail_smtp_encryption', '\"ssl\"'::jsonb),
+         ('mail_smtp_username', '\"\"'::jsonb),
+         ('mail_smtp_password', '\"\"'::jsonb),
+         ('mail_from_address', '\"\"'::jsonb),
+         ('mail_notify_enabled', 'false'::jsonb)
+         ON CONFLICT (key) DO NOTHING",
     )
     .execute(&mut *transaction)
     .await?;

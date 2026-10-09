@@ -35,6 +35,7 @@ tracing = "=0.1.41"
 tracing-subscriber = { version = "=0.3.20", features = ["env-filter", "fmt", "json"] }
 uuid = { version = "=1.18.1", features = ["serde", "v4"] }
 libc = "=0.2.175"
+portable-atomic = { version = "=1.15.0", features = ["fallback"] }
 tz-common = { path = "crates/tz-common" }
 tz-net = { path = "crates/tz-net" }
 tz-proto = { path = "crates/tz-proto" }
@@ -67,6 +68,7 @@ tz-guard = { path = "crates/tz-guard" }
 tz-ingress = { path = "crates/tz-ingress" }
 tz-agent = { path = "crates/tz-agent" }
 sysinfo = "=0.33.1"
+lettre = { version = "=0.11.15", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

@@ -1,6 +1,6 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, RefreshCw } from 'lucide-react'
+import { Download, Plus, RefreshCw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import apiClient from '@/api/client'
 import { getPage } from '@/api/page'
@@ -18,9 +18,11 @@ import { EntityList } from '@/components/EntityListPage/EntityListPage'
 import { FormField, FormStack } from '@/components/FormField'
 import { GenericSidebar } from '@/components/GenericSidebar/GenericSidebar'
 import { Input } from '@/components/Input'
-import { Modal } from '@/components/Modal/Modal'
+import { InstallDialog } from '@/components/InstallDialog'
 import { PageListHeader } from '@/components/PageListHeader'
 import { translateApiError } from '@/i18n/apiError'
+import { toast } from '@/stores/toast'
+import { useBrandingStore } from '@/stores/branding'
 import { translateField } from '@/i18n/fieldLabel'
 import { formatDateTime } from '@/utils/formatDateTime'
 
@@ -51,9 +53,14 @@ export default function ClientsPage({ audience }: { audience: 'admin' | 'user' }
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [name, setName] = useState('')
-  const [token, setToken] = useState('')
-  const [tokenModalOpen, setTokenModalOpen] = useState(false)
-  const [formError, setFormError] = useState('')
+  const [installTarget, setInstallTarget] = useState<{ id: string; name: string; token?: string } | null>(null)
+  const branding = useBrandingStore((state) => state.branding)
+  const loadBranding = useBrandingStore((state) => state.load)
+  useEffect(() => {
+    void loadBranding()
+  }, [loadBranding])
+  // client 连用户端：用户面板直接用当前地址；管理面板取系统设置里的站点地址。
+  const defaultBoard = audience === 'user' ? window.location.origin : (branding?.site_url?.trim() || '')
   const endpoint = audience === 'admin' ? '/v1/admin/clients' : '/v1/clients'
   const fetchPage = useCallback(
     (params: { page: number; page_size: number }) => getPage<Client>(endpoint, params),
@@ -62,17 +69,16 @@ export default function ClientsPage({ audience }: { audience: 'admin' | 'user' }
   const create = useMutation({
     mutationFn: async () => {
       const path = audience === 'admin' ? '/v1/admin/clients' : '/v1/clients'
-      return (await apiClient.post(path, { name })).data as { token: string }
+      return (await apiClient.post(path, { name })).data as { id: string; name: string; token: string }
     },
     onSuccess: async (result) => {
       setSidebarOpen(false)
       setName('')
-      setFormError('')
-      setToken(result.token)
-      setTokenModalOpen(true)
+      setInstallTarget({ id: result.id, name: result.name, token: result.token })
       await queryClient.invalidateQueries({ queryKey: ['clients'] })
+      toast.success(t('common.createSuccess'))
     },
-    onError: (error) => setFormError(translateApiError(t, error)),
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const clientBase = audience === 'admin' ? '/v1/admin/clients' : '/v1/clients'
@@ -83,8 +89,9 @@ export default function ClientsPage({ audience }: { audience: 'admin' | 'user' }
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['clients'] })
+      toast.success(t('common.operationSuccess'))
     },
-    onError: (error) => window.alert(translateApiError(t, error)),
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const remove = useMutation({
@@ -93,8 +100,9 @@ export default function ClientsPage({ audience }: { audience: 'admin' | 'user' }
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['clients'] })
+      toast.success(t('common.deleteSuccess'))
     },
-    onError: (error) => window.alert(translateApiError(t, error)),
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const update = useMutation({
@@ -106,16 +114,15 @@ export default function ClientsPage({ audience }: { audience: 'admin' | 'user' }
       setSidebarOpen(false)
       setEditingId(null)
       setName('')
-      setFormError('')
       await queryClient.invalidateQueries({ queryKey: ['clients'] })
+      toast.success(t('common.saveSuccess'))
     },
-    onError: (error) => setFormError(translateApiError(t, error)),
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const openEdit = useCallback((row: Client) => {
     setEditingId(row.id)
     setName(row.name)
-    setFormError('')
     setSidebarOpen(true)
   }, [])
 
@@ -191,6 +198,10 @@ export default function ClientsPage({ audience }: { audience: 'admin' | 'user' }
           <button type="button" className="data-table-link-btn" onClick={() => openEdit(row)}>
             {t('common.edit')}
           </button>
+          <button type="button" className="data-table-link-btn" onClick={() => setInstallTarget({ id: row.id, name: row.name })}>
+            <Download size={12} style={{ verticalAlign: '-1px', marginRight: 2 }} />
+            {t('install.action')}
+          </button>
           <button
             type="button"
             className="data-table-link-btn"
@@ -217,14 +228,12 @@ export default function ClientsPage({ audience }: { audience: 'admin' | 'user' }
   function openCreate() {
     setEditingId(null)
     setName('')
-    setFormError('')
     setSidebarOpen(true)
   }
 
   function submitSidebar() {
-    setFormError('')
     if (!name.trim()) {
-      setFormError(t('messages.clientNameRequired'))
+      toast.error(t('messages.clientNameRequired'))
       return
     }
     if (editingId) {
@@ -239,7 +248,6 @@ export default function ClientsPage({ audience }: { audience: 'admin' | 'user' }
   return (
     <section className="page-container page-container--entity-list">
       <PageListHeader
-        title={t('pages.clients')}
         actions={(
           <>
             <Button size="sm" onClick={openCreate}>
@@ -277,19 +285,20 @@ export default function ClientsPage({ audience }: { audience: 'admin' | 'user' }
         )}
       >
         <FormStack>
-          {formError ? <p className="sidebar-form-error" role="alert">{formError}</p> : null}
           <FormField label={translateField(t, 'client_name')} required>
             <Input value={name} onChange={(event) => setName(event.target.value)} maxLength={100} required />
           </FormField>
         </FormStack>
       </GenericSidebar>
-      <Modal open={tokenModalOpen} onClose={() => setTokenModalOpen(false)} title={translateField(t, 'one_time_token')} footer={(
-        <Button onClick={() => setTokenModalOpen(false)}>{t('common.save')}</Button>
-      )}>
-        <p className="mb-3 text-sm text-muted-foreground">{t('messages.clientCreated')}</p>
-        <Input readOnly value={token} className="font-mono text-xs" />
-        <p className="mt-3 text-xs text-muted-foreground">{t('messages.clientTokenCommand', { token })}</p>
-      </Modal>
+      <InstallDialog
+        open={installTarget !== null}
+        onClose={() => setInstallTarget(null)}
+        role="client"
+        name={installTarget?.name ?? ''}
+        tokenEndpoint={`${clientBase}/${installTarget?.id ?? ''}/token`}
+        defaultBoard={defaultBoard}
+        initialToken={installTarget?.token}
+      />
     </section>
   )
 }

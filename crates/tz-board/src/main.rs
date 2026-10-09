@@ -12,7 +12,12 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(path = %path.display(), "using board configuration");
     let config = config::BoardConfig::load(&path)?;
     let mode = setup::RuntimeMode::start(config.clone()).await?;
-    let state = Arc::new(setup::AppState::new(mode, path, config.listen.clone()));
+    let state = Arc::new(setup::AppState::new(
+        mode,
+        path,
+        config.listen.clone(),
+        config.trusted_proxies.clone(),
+    ));
     let _redis_worker = setup::start_redis_worker(state.clone());
     tz_board::start_background_tasks(state.clone());
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -22,7 +27,11 @@ async fn main() -> anyhow::Result<()> {
         }
     });
     let listeners = config::Listeners::bind(&config.listen).await?;
-    tracing::info!("board listeners ready");
+    tracing::info!(
+        admin = %config.listen.admin,
+        user = %config.listen.user,
+        "board listeners ready"
+    );
     tokio::try_join!(
         run_listener(
             listeners.admin,
@@ -31,17 +40,7 @@ async fn main() -> anyhow::Result<()> {
         ),
         run_listener(
             listeners.user,
-            setup::user_router(state.clone()),
-            shutdown_rx.clone()
-        ),
-        run_listener(
-            listeners.node,
-            setup::node_control_router(state.clone()),
-            shutdown_rx.clone()
-        ),
-        run_listener(
-            listeners.agent,
-            setup::agent_control_router(state),
+            setup::user_router(state),
             shutdown_rx
         ),
     )

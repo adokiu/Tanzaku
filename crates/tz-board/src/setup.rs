@@ -8,7 +8,7 @@ use argon2::PasswordVerifier;
 use axum::{
     Json, Router,
     body::Body,
-    extract::{ConnectInfo, OriginalUri, State},
+    extract::{DefaultBodyLimit, OriginalUri, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -19,7 +19,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::{
-    net::SocketAddr,
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
@@ -49,6 +48,7 @@ pub struct AppState {
     mode: Arc<ArcSwap<RuntimeMode>>,
     config_path: PathBuf,
     listen: ListenConfig,
+    trusted_proxies: Arc<crate::client_ip::TrustedProxies>,
     init_lock: Mutex<()>,
 }
 
@@ -157,13 +157,25 @@ impl RuntimeMode {
 }
 
 impl AppState {
-    pub fn new(mode: RuntimeMode, config_path: PathBuf, listen: ListenConfig) -> Self {
+    pub fn new(
+        mode: RuntimeMode,
+        config_path: PathBuf,
+        listen: ListenConfig,
+        trusted_proxy_cidrs: Vec<String>,
+    ) -> Self {
         Self {
             mode: Arc::new(ArcSwap::from_pointee(mode)),
             config_path,
             listen,
+            trusted_proxies: Arc::new(crate::client_ip::TrustedProxies::from_cidrs(
+                &trusted_proxy_cidrs,
+            )),
             init_lock: Mutex::new(()),
         }
+    }
+
+    pub(crate) fn trusted_proxies(&self) -> &crate::client_ip::TrustedProxies {
+        &self.trusted_proxies
     }
 
     pub(crate) async fn database_for(
@@ -339,7 +351,10 @@ async fn retry_port_outbox(pg: &PgPool, redis: &ConnectionManager) {
 }
 
 pub fn admin_router(state: Arc<AppState>) -> Router {
-    Router::new()
+    // admin HTTP + server(node) `/ws` 同端口；WS 单独挂载，避免 body limit 影响升级。
+    // 管理端需上传主题 zip（可达数十 MB），body 上限 128MiB；用户端仍用小限制。
+    const ADMIN_BODY_LIMIT: usize = 128 * 1024 * 1024;
+    let http = Router::new()
         .route("/", get(admin_home))
         .route("/init", get(init_page))
         .route("/api/init/status", get(init_status))
@@ -349,37 +364,44 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/auth/login", post(admin_login))
         .route("/api/auth/logout", post(admin_logout))
         .route("/api/auth/me", get(admin_me))
+        .route("/api/public/branding", get(public_branding))
         .merge(crate::api::admin_router().layer(
-            axum::middleware::from_fn_with_state(state.clone(), crate::api::csrf::require_admin_csrf),
+            axum::middleware::from_fn_with_state(
+                state.clone(),
+                crate::api::csrf::require_admin_csrf,
+            ),
         ))
         .fallback(admin_static)
-        .with_state(state)
-        .layer(RequestBodyLimitLayer::new(128 * 1024))
+        .with_state(state.clone())
+        .layer(DefaultBodyLimit::max(ADMIN_BODY_LIMIT))
+        .layer(RequestBodyLimitLayer::new(ADMIN_BODY_LIMIT));
+    Router::new()
+        .merge(crate::ws::node_router(state))
+        .merge(http)
 }
 
 pub fn user_router(state: Arc<AppState>) -> Router {
-    Router::new()
+    // user HTTP + client(agent) `/ws` 同端口。
+    let http = Router::new()
         .route("/api/auth/login", post(user_login))
         .route("/api/auth/logout", post(user_logout))
         .route("/api/auth/me", get(user_me))
+        .route("/api/public/branding", get(public_branding))
+        .route("/api/public/theme", get(public_theme))
         .route(
             "/themes/{theme_id}/{*rest}",
             get(crate::theme::theme_asset),
         )
+        .merge(crate::api::payments::public_router())
         .merge(crate::api::user_router().layer(
             axum::middleware::from_fn_with_state(state.clone(), crate::api::csrf::require_user_csrf),
         ))
         .fallback(user_static)
-        .with_state(state)
-        .layer(RequestBodyLimitLayer::new(128 * 1024))
-}
-
-pub fn node_control_router(state: Arc<AppState>) -> Router {
-    crate::ws::node_router(state)
-}
-
-pub fn agent_control_router(state: Arc<AppState>) -> Router {
-    crate::ws::agent_router(state)
+        .with_state(state.clone())
+        .layer(RequestBodyLimitLayer::new(128 * 1024));
+    Router::new()
+        .merge(crate::ws::agent_router(state))
+        .merge(http)
 }
 
 async fn admin_home(State(state): State<Arc<AppState>>) -> Response {
@@ -419,7 +441,7 @@ async fn user_static(
     let Some(pg) = state.postgres() else {
         return unavailable(StatusCode::SERVICE_UNAVAILABLE, "board 尚未初始化");
     };
-    let active = crate::theme::active_theme_id(&pg).await;
+    let active = crate::theme::resolve_serve_theme_id(&pg).await;
     crate::theme::serve_user_portal(uri.path(), &active).await
 }
 
@@ -614,27 +636,63 @@ async fn complete_init(
     .into_response()
 }
 
+async fn public_theme(State(state): State<Arc<AppState>>) -> Response {
+    let mode = state.mode.load_full();
+    let RuntimeMode::Ready { db, .. } = &*mode else {
+        return Json(serde_json::json!({
+            "short": "",
+            "version": "",
+            "settings": {},
+        }))
+        .into_response();
+    };
+    let info = crate::theme::public_theme_info(&db.api()).await;
+    Json(info).into_response()
+}
+
+async fn public_branding(State(state): State<Arc<AppState>>) -> Response {
+    let mode = state.mode.load_full();
+    let RuntimeMode::Ready { db, .. } = &*mode else {
+        return Json(serde_json::json!({
+            "site_title": "",
+            "site_subtitle": "",
+            "site_description": "",
+            "site_url": ""
+        }))
+        .into_response();
+    };
+    let branding = crate::system_settings::site_branding(&db.api()).await;
+    Json(serde_json::json!({
+        "site_title": branding.site_title,
+        "site_subtitle": branding.site_subtitle,
+        "site_description": branding.site_description,
+        "site_url": branding.site_url,
+    }))
+    .into_response()
+}
+
 async fn admin_login(
     State(state): State<Arc<AppState>>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    client_ip: crate::client_ip::ClientIp,
     Json(request): Json<LoginRequest>,
 ) -> Response {
-    login(state, peer, request, UserRole::Admin).await
+    login(state, client_ip, request, UserRole::Admin).await
 }
 
 async fn user_login(
     State(state): State<Arc<AppState>>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    client_ip: crate::client_ip::ClientIp,
     Json(request): Json<LoginRequest>,
 ) -> Response {
-    login(state, peer, request, UserRole::User).await
+    // 用户端允许 admin / user 登录（管理员也可使用用户中心）。
+    login(state, client_ip, request, UserRole::User).await
 }
 
 async fn login(
     state: Arc<AppState>,
-    peer: SocketAddr,
+    client_ip: crate::client_ip::ClientIp,
     request: LoginRequest,
-    role: UserRole,
+    portal: UserRole,
 ) -> Response {
     let mode = state.mode.load_full();
     let RuntimeMode::Ready {
@@ -651,47 +709,110 @@ async fn login(
     }
     let email = request.email.trim().to_lowercase();
     let mut redis = redis.clone();
-    let fail_key = format!("auth:fail:{}:{}", role.as_str(), peer.ip());
-    let attempts: i64 = match redis.incr(&fail_key, 1).await {
+    // 基线：按真实客户端 IP 限流，防扫号（反代/CDN 后不能用 peer=127.0.0.1）
+    let ip_fail_key = format!("auth:fail:ip:{}:{}", portal.as_str(), client_ip);
+    let ip_attempts: i64 = match redis.incr(&ip_fail_key, 1).await {
         Ok(attempts) => attempts,
         Err(_) => return unavailable(StatusCode::SERVICE_UNAVAILABLE, "认证服务暂不可用"),
     };
-    let expires: bool = match redis.expire(&fail_key, 900).await {
-        Ok(expires) => expires,
-        Err(_) => return unavailable(StatusCode::SERVICE_UNAVAILABLE, "认证服务暂不可用"),
-    };
-    if !expires {
+    if redis.expire(&ip_fail_key, 900).await.unwrap_or(false) == false {
         return unavailable(StatusCode::SERVICE_UNAVAILABLE, "认证服务暂不可用");
     }
-    if attempts > 10 {
+    if ip_attempts > 10 {
         return unavailable(
             StatusCode::TOO_MANY_REQUESTS,
             "登录尝试次数过多，请稍后重试",
         );
     }
-    let account = sqlx::query_as::<_, (Uuid, String, String)>(
-        "SELECT id, email, password_hash FROM users WHERE email = $1 AND role = $2 AND status = 'active'",
-    )
-    .bind(&email)
-    .bind(role.as_str())
-    .fetch_optional(&pg)
-    .await;
+
+    let policy = crate::system_settings::password_attempt_policy(&pg).await;
+    let account_fail_key = format!("auth:fail:account:{}:{email}", portal.as_str());
+    let account_lock_key = format!("auth:lock:account:{}:{email}", portal.as_str());
+    if policy.enabled {
+        let locked: bool = redis.exists(&account_lock_key).await.unwrap_or(false);
+        if locked {
+            return unavailable(
+                StatusCode::TOO_MANY_REQUESTS,
+                if policy.lock_minutes == 0 {
+                    "账户已锁定，请联系管理员解锁"
+                } else {
+                    "账户已锁定，请稍后重试"
+                },
+            );
+        }
+    }
+
+    let account = if portal == UserRole::Admin {
+        sqlx::query_as::<_, (Uuid, String, String, String)>(
+            "SELECT id, email, password_hash, role FROM users WHERE email = $1 AND role = 'admin' AND status = 'active'",
+        )
+        .bind(&email)
+        .fetch_optional(&pg)
+        .await
+    } else {
+        sqlx::query_as::<_, (Uuid, String, String, String)>(
+            "SELECT id, email, password_hash, role FROM users WHERE email = $1 AND role IN ('user', 'admin') AND status = 'active'",
+        )
+        .bind(&email)
+        .fetch_optional(&pg)
+        .await
+    };
     let verified = match account {
-        Ok(Some((user_id, email, hash))) => {
+        Ok(Some((user_id, email, hash, role_str))) => {
+            let account_role = match role_str.as_str() {
+                "admin" => UserRole::Admin,
+                "user" => UserRole::User,
+                _ => {
+                    return unavailable(StatusCode::UNAUTHORIZED, "邮箱或密码错误");
+                }
+            };
             let valid = argon2::PasswordHash::new(&hash).ok().is_some_and(|hash| {
                 argon2::Argon2::default()
                     .verify_password(request.password.as_bytes(), &hash)
                     .is_ok()
             });
-            if valid { Some((user_id, email)) } else { None }
+            if valid {
+                Some((user_id, email, account_role))
+            } else {
+                None
+            }
         }
         Ok(None) => None,
         Err(_) => return unavailable(StatusCode::SERVICE_UNAVAILABLE, "认证服务暂不可用"),
     };
-    let Some((user_id, email)) = verified else {
+    let Some((user_id, email, role)) = verified else {
+        if policy.enabled {
+            let attempts: i64 = redis.incr(&account_fail_key, 1).await.unwrap_or(0);
+            let window_secs = if policy.lock_minutes == 0 {
+                24 * 60 * 60
+            } else {
+                i64::from(policy.lock_minutes.max(1)) * 60
+            };
+            let _: Result<bool, _> = redis.expire(&account_fail_key, window_secs).await;
+            if attempts >= i64::from(policy.max_attempts) {
+                let lock_ttl = if policy.lock_minutes == 0 {
+                    30 * 24 * 60 * 60
+                } else {
+                    i64::from(policy.lock_minutes) * 60
+                };
+                let _: Result<(), _> = redis
+                    .set_ex::<_, _, ()>(&account_lock_key, "1", lock_ttl as u64)
+                    .await;
+                return unavailable(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    if policy.lock_minutes == 0 {
+                        "密码错误次数过多，账户已锁定，请联系管理员"
+                    } else {
+                        "密码错误次数过多，账户已暂时锁定"
+                    },
+                );
+            }
+        }
         return unavailable(StatusCode::UNAUTHORIZED, "邮箱或密码错误");
     };
-    let _: Result<usize, _> = redis.del(&fail_key).await;
+    let _: Result<usize, _> = redis.del(&ip_fail_key).await;
+    let _: Result<usize, _> = redis.del(&account_fail_key).await;
+    let _: Result<usize, _> = redis.del(&account_lock_key).await;
     let mut token_bytes = [0u8; 32];
     if getrandom::fill(&mut token_bytes).is_err() {
         return unavailable(StatusCode::INTERNAL_SERVER_ERROR, "无法建立登录会话");
@@ -719,7 +840,22 @@ async fn login(
     {
         return unavailable(StatusCode::SERVICE_UNAVAILABLE, "认证服务暂不可用");
     }
-    let cookie_name = role.cookie_name();
+    let _: Result<(), _> = sqlx::query("UPDATE users SET last_login_at = now() WHERE id = $1")
+        .bind(user_id)
+        .execute(&pg)
+        .await
+        .map(|_| ());
+    let _: Result<(), _> = sqlx::query(
+        "INSERT INTO audit_logs (actor_id, action, target_type, target_id, remote_ip) \
+         VALUES ($1, 'auth.login', 'user', $2, $3::inet)",
+    )
+    .bind(user_id)
+    .bind(user_id.to_string())
+    .bind(client_ip.as_str())
+    .execute(&pg)
+    .await
+    .map(|_| ());
+    let cookie_name = portal.cookie_name();
     let cookie = format!("{cookie_name}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=43200");
     let mut response = Json(LoginResponse {
         user_id,
@@ -812,14 +948,21 @@ pub(crate) async fn authenticate(
     };
     let claims: SessionClaims = serde_json::from_str(&payload)
         .map_err(|_| unavailable(StatusCode::UNAUTHORIZED, "登录会话无效"))?;
-    if claims.role != role {
+    // 管理端仅 admin；用户端允许 admin / user（管理员可用用户中心）。
+    let portal_ok = match role {
+        UserRole::Admin => claims.role == UserRole::Admin,
+        UserRole::User => {
+            claims.role == UserRole::User || claims.role == UserRole::Admin
+        }
+    };
+    if !portal_ok {
         return Err(unavailable(StatusCode::FORBIDDEN, "无权访问"));
     }
     let active: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND role = $2 AND status = 'active')",
     )
     .bind(claims.user_id)
-    .bind(role.as_str())
+    .bind(claims.role.as_str())
     .fetch_one(&pg)
     .await
     .map_err(|_| unavailable(StatusCode::SERVICE_UNAVAILABLE, "认证服务暂不可用"))?;
@@ -839,6 +982,43 @@ fn new_csrf_token() -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+/// 换绑邮箱后写回当前用户会话，避免刷新后仍显示旧邮箱。
+pub(crate) async fn update_session_email(
+    state: &AppState,
+    headers: &HeaderMap,
+    role: UserRole,
+    new_email: &str,
+) -> Result<(), Response> {
+    let Some(session_token) = read_cookie(headers, role.cookie_name()) else {
+        return Ok(());
+    };
+    let mode = state.mode.load_full();
+    let RuntimeMode::Ready {
+        redis: Some(redis),
+        ..
+    } = &*mode
+    else {
+        return Ok(());
+    };
+    let mut redis = redis.clone();
+    let key = session_key(&session_token);
+    let payload: Option<String> = redis.get(&key).await.unwrap_or(None);
+    let Some(payload) = payload else {
+        return Ok(());
+    };
+    let Ok(mut claims) = serde_json::from_str::<SessionClaims>(&payload) else {
+        return Ok(());
+    };
+    claims.email = new_email.to_owned();
+    let Ok(updated) = serde_json::to_string(&claims) else {
+        return Ok(());
+    };
+    let _: Result<(), _> = redis
+        .set_ex::<_, _, ()>(key, updated, 12 * 60 * 60)
+        .await;
+    Ok(())
 }
 
 async fn session_claims_for_me(

@@ -12,6 +12,7 @@ tcp = ["dep:chacha20poly1305", "dep:hkdf", "dep:sha2", "dep:getrandom"]
 quic = ["dep:quinn", "dep:quinn-proto", "dep:seahash"]
 
 [dependencies]
+portable-atomic.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 dashmap.workspace = true
@@ -28,6 +29,7 @@ tz-common.workspace = true
 tz-net.workspace = true
 tz-proto.workspace = true
 uuid = { workspace = true, features = ["serde"] }
+reqwest = { version = "=0.12.22", default-features = false, features = ["json", "rustls-tls", "rustls-tls-webpki-roots"] }
 sha2 = { workspace = true, optional = true }
 hkdf = { workspace = true, optional = true }
 chacha20poly1305 = { workspace = true, optional = true }

@@ -17,6 +17,25 @@ pub trait GuardModule: Send + Sync {
     fn on_udp_packet(&self, ctx: &PktCtx) -> Verdict;
     fn on_http_request(&self, ctx: &HttpCtx) -> Verdict;
     fn on_auth_failure(&self, ctx: &AuthFailCtx) -> Verdict;
+    fn on_tls_handshake(&self) -> Verdict {
+        Verdict::Continue
+    }
+    fn release_tls_handshake(&self) {}
+    fn reconfigure(&self, _config: &Value) -> bool {
+        false
+    }
+}
+
+pub struct TlsHandshakeGuard {
+    modules: Vec<Arc<dyn GuardModule>>,
+}
+
+impl Drop for TlsHandshakeGuard {
+    fn drop(&mut self) {
+        for module in &self.modules {
+            module.release_tls_handshake();
+        }
+    }
 }
 
 /// 防护触发回调（节点侧聚合后上报 Board）。
@@ -66,8 +85,22 @@ impl GuardPipeline {
     }
 
     pub fn reload(&self, policy: &Value) {
+        let previous_policy = self.policy.load_full();
+        if previous_policy.as_ref() == policy {
+            return;
+        }
+        let previous = self.inner.load_full();
         let rebuilt = Self::from_policy(policy);
-        self.inner.store(rebuilt.inner.load_full());
+        let modules = rebuilt.inner.load().iter().map(|module| {
+            previous.iter().find(|old| old.name() == module.name())
+                .filter(|old| {
+                    previous_policy.get(old.name()) == policy.get(old.name())
+                        || old.reconfigure(&policy[old.name()])
+                })
+                .cloned()
+                .unwrap_or_else(|| module.clone())
+        }).collect();
+        self.inner.store(Arc::new(modules));
         self.policy.store(rebuilt.policy.load_full());
         // 保留已注册的事件钩子。
     }
@@ -122,6 +155,23 @@ impl GuardPipeline {
 
     pub fn check_conn(&self, ctx: &ConnCtx) -> Verdict {
         self.evaluate(ctx, GuardHook::Conn)
+    }
+
+    pub fn acquire_tls_handshake(&self) -> Result<TlsHandshakeGuard, Verdict> {
+        let mut permit = TlsHandshakeGuard { modules: Vec::new() };
+        for module in self.inner.load().iter() {
+            match module.on_tls_handshake() {
+                Verdict::Continue | Verdict::Trust => permit.modules.push(module.clone()),
+                verdict => return Err(verdict),
+            }
+        }
+        Ok(permit)
+    }
+
+    pub fn check_ip_acl(&self, ctx: &ConnCtx) -> Verdict {
+        self.inner.load().iter()
+            .find(|module| module.name() == "ip_acl")
+            .map_or(Verdict::Continue, |module| module.on_conn(ctx))
     }
 
     pub fn check_udp(&self, ctx: &PktCtx) -> Verdict {
@@ -210,4 +260,42 @@ impl GuardModule for NullGuard {
 
 pub fn null_module() -> Arc<dyn GuardModule> {
     Arc::new(NullGuard)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn soft_reload_keeps_tls_handshake_counters() {
+        let pipeline = GuardPipeline::from_policy(&json!({
+            "tls_guard": {"enabled": true, "max_handshakes": 2}
+        }));
+        let first = pipeline.acquire_tls_handshake().expect("slot");
+        let second = pipeline.acquire_tls_handshake().expect("slot");
+        assert!(pipeline.acquire_tls_handshake().is_err());
+        pipeline.reload(&json!({
+            "tls_guard": {"enabled": true, "max_handshakes": 2},
+            "http_guard": {"enabled": true}
+        }));
+        assert!(pipeline.acquire_tls_handshake().is_err());
+        drop(first);
+        assert!(pipeline.acquire_tls_handshake().is_ok());
+        drop(second);
+    }
+
+    #[test]
+    fn unrelated_module_config_change_updates_limit_without_reset_when_reconfigurable() {
+        let pipeline = GuardPipeline::from_policy(&json!({
+            "tls_guard": {"enabled": true, "max_handshakes": 1}
+        }));
+        let _held = pipeline.acquire_tls_handshake().expect("slot");
+        pipeline.reload(&json!({
+            "tls_guard": {"enabled": true, "max_handshakes": 3}
+        }));
+        assert!(pipeline.acquire_tls_handshake().is_ok());
+        assert!(pipeline.acquire_tls_handshake().is_ok());
+        assert!(pipeline.acquire_tls_handshake().is_err());
+    }
 }

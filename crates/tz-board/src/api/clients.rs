@@ -1,4 +1,4 @@
-use super::{database_error, response_error, write_audit};
+use super::{AgentTokenView, database_error, new_agent_token, response_error, write_audit};
 use crate::setup::{AppState, UserRole, unavailable};
 use crate::page::{Page, PageQuery};
 use axum::{
@@ -8,7 +8,6 @@ use axum::{
     routing::{delete, get, patch, post, put},
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use sqlx::FromRow;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -27,6 +26,10 @@ pub fn admin_router() -> Router<Arc<AppState>> {
             "/api/v1/admin/clients/{client_id}",
             put(admin_update_client).delete(admin_delete_client),
         )
+        .route(
+            "/api/v1/admin/clients/{client_id}/token",
+            get(admin_get_client_token).post(admin_reset_client_token),
+        )
 }
 
 pub fn user_router() -> Router<Arc<AppState>> {
@@ -40,6 +43,124 @@ pub fn user_router() -> Router<Arc<AppState>> {
             "/api/v1/clients/{client_id}",
             put(user_update_client).delete(user_delete_client),
         )
+        .route(
+            "/api/v1/clients/{client_id}/token",
+            get(user_get_client_token).post(user_reset_client_token),
+        )
+}
+
+async fn admin_get_client_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(client_id): Path<Uuid>,
+) -> Result<Json<AgentTokenView>, (StatusCode, Json<serde_json::Value>)> {
+    let (pg, _) = state
+        .database_for(&headers, UserRole::Admin)
+        .await
+        .map_err(response_error)?;
+    get_client_token(&pg, client_id, None).await
+}
+
+async fn user_get_client_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(client_id): Path<Uuid>,
+) -> Result<Json<AgentTokenView>, (StatusCode, Json<serde_json::Value>)> {
+    let (pg, account) = state
+        .database_for(&headers, UserRole::User)
+        .await
+        .map_err(response_error)?;
+    get_client_token(&pg, client_id, Some(account.user_id)).await
+}
+
+async fn admin_reset_client_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(client_id): Path<Uuid>,
+) -> Result<Json<AgentTokenView>, (StatusCode, Json<serde_json::Value>)> {
+    let (pg, actor) = state
+        .database_for(&headers, UserRole::Admin)
+        .await
+        .map_err(response_error)?;
+    reset_client_token(&pg, actor.user_id, client_id, None).await
+}
+
+async fn user_reset_client_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(client_id): Path<Uuid>,
+) -> Result<Json<AgentTokenView>, (StatusCode, Json<serde_json::Value>)> {
+    let (pg, account) = state
+        .database_for(&headers, UserRole::User)
+        .await
+        .map_err(response_error)?;
+    reset_client_token(&pg, account.user_id, client_id, Some(account.user_id)).await
+}
+
+async fn get_client_token(
+    pg: &sqlx::PgPool,
+    client_id: Uuid,
+    owner_user_id: Option<Uuid>,
+) -> Result<Json<AgentTokenView>, (StatusCode, Json<serde_json::Value>)> {
+    let row: Option<(Option<String>, String)> = if let Some(user_id) = owner_user_id {
+        sqlx::query_as("SELECT token, token_prefix FROM clients WHERE id = $1 AND user_id = $2")
+            .bind(client_id)
+            .bind(user_id)
+            .fetch_optional(pg)
+            .await
+    } else {
+        sqlx::query_as("SELECT token, token_prefix FROM clients WHERE id = $1")
+            .bind(client_id)
+            .fetch_optional(pg)
+            .await
+    }
+    .map_err(database_error)?;
+    let Some((token, token_prefix)) = row else {
+        return Err(response_error(unavailable(StatusCode::NOT_FOUND, "Client 不存在")));
+    };
+    Ok(Json(AgentTokenView { token, token_prefix }))
+}
+
+async fn reset_client_token(
+    pg: &sqlx::PgPool,
+    actor_id: Uuid,
+    client_id: Uuid,
+    owner_user_id: Option<Uuid>,
+) -> Result<Json<AgentTokenView>, (StatusCode, Json<serde_json::Value>)> {
+    let (token, token_hash, token_prefix) = new_agent_token("无法生成 Client 凭据")?;
+    let mut transaction = pg.begin().await.map_err(database_error)?;
+    let updated = if let Some(user_id) = owner_user_id {
+        sqlx::query(
+            "UPDATE clients SET token = $2, token_hash = $3, token_prefix = $4, updated_at = now() WHERE id = $1 AND user_id = $5",
+        )
+        .bind(client_id)
+        .bind(&token)
+        .bind(token_hash)
+        .bind(&token_prefix)
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await
+    } else {
+        sqlx::query(
+            "UPDATE clients SET token = $2, token_hash = $3, token_prefix = $4, updated_at = now() WHERE id = $1",
+        )
+        .bind(client_id)
+        .bind(&token)
+        .bind(token_hash)
+        .bind(&token_prefix)
+        .execute(&mut *transaction)
+        .await
+    }
+    .map_err(database_error)?;
+    if updated.rows_affected() == 0 {
+        return Err(response_error(unavailable(StatusCode::NOT_FOUND, "Client 不存在")));
+    }
+    write_audit(&mut transaction, actor_id, "client.token_reset", "client", client_id).await?;
+    transaction.commit().await.map_err(database_error)?;
+    Ok(Json(AgentTokenView {
+        token: Some(token),
+        token_prefix,
+    }))
 }
 
 #[derive(Debug, Serialize)]
@@ -468,29 +589,18 @@ async fn insert_client(
             "Client 名称长度必须为 1 到 100 个字符",
         )));
     }
-    let mut token_bytes = [0u8; 32];
-    getrandom::fill(&mut token_bytes).map_err(|_| {
-        response_error(unavailable(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "无法生成 Client 凭据",
-        ))
-    })?;
-    let token = token_bytes
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let token_hash = Sha256::digest(token.as_bytes()).to_vec();
-    let token_prefix = token.chars().take(12).collect::<String>();
+    let (token, token_hash, token_prefix) = new_agent_token("无法生成 Client 凭据")?;
     let mut transaction = pg.begin().await.map_err(database_error)?;
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO clients (id, user_id, name, token_hash, token_prefix) VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO clients (id, user_id, name, token_hash, token_prefix, token) VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(id)
     .bind(owner_user_id)
     .bind(name)
     .bind(token_hash)
     .bind(&token_prefix)
+    .bind(&token)
     .execute(&mut *transaction)
     .await
     .map_err(|_| response_error(unavailable(StatusCode::CONFLICT, "Client 名称已存在或数据库不可用")))?;

@@ -21,8 +21,11 @@ import {
   TunnelTrafficTotalCell,
 } from '@/components/TunnelListCells'
 import type { ClientTrafficMetrics } from '@/components/ClientTrafficCells'
+import { CertExpiryTag } from '@/components/CertExpiryTag'
 import { translateApiError } from '@/i18n/apiError'
+import { toast } from '@/stores/toast'
 import { translateField } from '@/i18n/fieldLabel'
+import { formatDateYmd } from '@/utils/formatDateTime'
 
 type NodeOption = { id: string; name: string }
 
@@ -33,6 +36,7 @@ type TunnelRow = {
   client_id: string
   client_name?: string | null
   node_id: string
+  node_public_host?: string | null
   name: string
   carrier: string
   protocol: string
@@ -136,7 +140,6 @@ export default function TunnelsPage() {
 
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [editing, setEditing] = useState<TunnelRow | null>(null)
-  const [formError, setFormError] = useState('')
   const [name, setName] = useState('')
   const [clientId, setClientId] = useState('')
   const [carrier, setCarrier] = useState('tcp')
@@ -197,16 +200,22 @@ export default function TunnelsPage() {
     mutationFn: async ({ id, enabled }: { id: string; enabled: boolean }) => {
       await apiClient.patch(`/v1/admin/tunnels/${id}/enabled`, { enabled })
     },
-    onSuccess: invalidate,
-    onError: (error) => window.alert(translateApiError(t, error)),
+    onSuccess: async () => {
+      await invalidate()
+      toast.success(t('common.operationSuccess'))
+    },
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const remove = useMutation({
     mutationFn: async (id: string) => {
       await apiClient.delete(`/v1/admin/tunnels/${id}`)
     },
-    onSuccess: invalidate,
-    onError: (error) => window.alert(translateApiError(t, error)),
+    onSuccess: async () => {
+      await invalidate()
+      toast.success(t('common.deleteSuccess'))
+    },
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const create = useMutation({
@@ -236,8 +245,9 @@ export default function TunnelsPage() {
       setSidebarOpen(false)
       resetForm()
       await invalidate()
+      toast.success(t('common.createSuccess'))
     },
-    onError: (error) => setFormError(translateApiError(t, error)),
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const update = useMutation({
@@ -257,7 +267,7 @@ export default function TunnelsPage() {
         http_access: httpTunnel ? httpAccess : undefined,
         domains: httpTunnel ? parseDomainList(domainsText) : undefined,
         https_enabled: httpTunnel ? httpsEnabled : undefined,
-        cert_id: httpTunnel && httpsEnabled ? certId : undefined,
+        cert_id: httpTunnel && httpsEnabled && certId ? certId : undefined,
         host_rewrite: httpTunnel ? hostRewrite.trim() || '$http_host' : undefined,
         backend_tls_insecure: httpTunnel && targetIsHttps ? backendTlsInsecure : undefined,
         speed_limit_mbps: speedLimit.trim() ? Number(speedLimit) : undefined,
@@ -268,8 +278,9 @@ export default function TunnelsPage() {
       setEditing(null)
       resetForm()
       await invalidate()
+      toast.success(t('common.saveSuccess'))
     },
-    onError: (error) => setFormError(translateApiError(t, error)),
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   function resetForm() {
@@ -290,7 +301,6 @@ export default function TunnelsPage() {
     setSpeedLimit('')
     setFormNodeId('')
     setShowAllCerts(false)
-    setFormError('')
   }
 
   function openCreate() {
@@ -318,67 +328,65 @@ export default function TunnelsPage() {
     setSpeedLimit(row.speed_limit_mbps != null ? String(row.speed_limit_mbps) : '')
     setFormNodeId(row.node_id)
     setShowAllCerts(false)
-    setFormError('')
     setSidebarOpen(true)
   }
 
   function submitSidebar() {
-    setFormError('')
     if (!name.trim()) {
-      setFormError(t('messages.tunnelNameRequired'))
+      toast.error(t('messages.tunnelNameRequired'))
       return
     }
     if (editing) {
-      if (isHttp && httpsEnabled && !certId) {
-        setFormError(t('messages.tunnelCertRequired'))
+      if (isHttp && httpsEnabled && !certId && (httpAccess === 'shared' || parseDomainList(domainsText).length > 0)) {
+        toast.error(t('messages.tunnelCertRequired'))
         return
       }
       if (isHttp && !targetUrl.trim()) {
-        setFormError(t('messages.tunnelTargetUrlRequired'))
+        toast.error(t('messages.tunnelTargetUrlRequired'))
         return
       }
-      if (isHttp && (httpAccess === 'shared' || httpsEnabled) && parseDomainList(domainsText).length === 0) {
-        setFormError(t('messages.tunnelDomainsRequired'))
+      if (isHttp && httpAccess === 'shared' && parseDomainList(domainsText).length === 0) {
+        toast.error(t('messages.tunnelDomainsRequired'))
         return
       }
       if (isHttp && httpAccess === 'shared' && parseDomainList(domainsText).some(isIpHost)) {
-        setFormError(t('messages.tunnelSharedIpForbidden'))
+        toast.error(t('messages.tunnelSharedIpForbidden'))
         return
       }
       if (!isHttp && (!targetHost.trim() || !targetPort.trim())) {
-        setFormError(t('messages.tunnelTargetRequired'))
+        toast.error(t('messages.tunnelTargetRequired'))
         return
       }
       if (!clientId) {
-        setFormError(t('messages.clientOwnerRequired'))
+        toast.error(t('messages.clientOwnerRequired'))
         return
       }
       update.mutate()
     } else {
       if (!clientId) {
-        setFormError(t('messages.clientOwnerRequired'))
+        toast.error(t('messages.clientOwnerRequired'))
         return
       }
       if (isHttp) {
         if (!targetUrl.trim()) {
-          setFormError(t('messages.tunnelTargetUrlRequired'))
+          toast.error(t('messages.tunnelTargetUrlRequired'))
           return
         }
         const domains = parseDomainList(domainsText)
-        if ((httpAccess === 'shared' || httpsEnabled) && domains.length === 0) {
-          setFormError(t('messages.tunnelDomainsRequired'))
+        if (httpAccess === 'shared' && domains.length === 0) {
+          toast.error(t('messages.tunnelDomainsRequired'))
           return
         }
         if (httpAccess === 'shared' && domains.some(isIpHost)) {
-          setFormError(t('messages.tunnelSharedIpForbidden'))
+          toast.error(t('messages.tunnelSharedIpForbidden'))
           return
         }
-        if (httpsEnabled && !certId) {
-          setFormError(t('messages.tunnelCertRequired'))
+        if (httpsEnabled && !certId && (httpAccess === 'shared' || domains.length > 0)) {
+          toast.error(t('messages.tunnelCertRequired'))
           return
         }
       } else if (!targetHost.trim() || !targetPort.trim()) {
-        setFormError(t('messages.tunnelTargetRequired'))
+        toast.error(t('messages.tunnelTargetRequired'))
         return
       }
       create.mutate()
@@ -405,10 +413,20 @@ export default function TunnelsPage() {
   }, [certOwnerId, certificatesQuery.data, domainsText])
   const certOptions = useMemo(() => {
     const visible = showAllCerts ? rankedCerts : rankedCerts.filter((item) => item.score > 0 || item.cert.id === certId)
-    return visible.map((item) => ({
-      label: `${item.cert.domains.join(', ')} · ${item.cert.not_after}`,
-      value: item.cert.id,
-    }))
+    return visible.map((item) => {
+      const domains = item.cert.domains.join(', ') || '—'
+      const ymd = formatDateYmd(item.cert.not_after)
+      return {
+        label: (
+          <span className="cert-select-option">
+            <span className="cert-select-option__domains">{domains}</span>
+            <CertExpiryTag notAfter={item.cert.not_after} />
+          </span>
+        ),
+        value: item.cert.id,
+        searchText: `${domains} ${ymd}`,
+      }
+    })
   }, [certId, rankedCerts, showAllCerts])
   const hasHiddenCerts = rankedCerts.some((item) => item.score === 0 && item.cert.id !== certId)
 
@@ -457,10 +475,16 @@ export default function TunnelsPage() {
       },
       {
         key: 'remote_port',
-        title: translateField(t, 'remote_port'),
-        width: 88,
+        title: translateField(t, 'public_address'),
+        width: 150,
         render: (row) => (
-          <span className="data-table-cell">{row.remote_port ?? '—'}</span>
+          <span className="data-table-cell">
+            {row.node_public_host
+              ? row.remote_port != null
+                ? `${row.node_public_host}:${row.remote_port}`
+                : `${row.node_public_host}（共享入口）`
+              : '—'}
+          </span>
         ),
       },
       {
@@ -525,7 +549,6 @@ export default function TunnelsPage() {
   return (
     <>
       <EntityListPage
-        title={t('pages.tunnels')}
         listLayoutId="tunnels"
         columns={columns}
         queryKey={['admin-tunnels', nodeId]}
@@ -536,6 +559,14 @@ export default function TunnelsPage() {
         refetchInterval={2000}
         actions={(
           <>
+            <div className="page-header__select">
+              <Select
+                value={nodeId}
+                options={nodeOptions}
+                onChange={(value) => setNodeId(String(value))}
+                placeholder={t('tunnels.filterByNode')}
+              />
+            </div>
             <Button size="sm" onClick={openCreate} disabled={!nodeId}>
               <Plus size={16} />
               {t('forms.createTunnel')}
@@ -550,18 +581,6 @@ export default function TunnelsPage() {
               {t('common.refresh')}
             </Button>
           </>
-        )}
-        toolbar={(
-          <div className="entity-list-toolbar__row">
-            <FormField label={t('tunnels.filterByNode')}>
-              <Select
-                value={nodeId}
-                options={nodeOptions}
-                onChange={(value) => setNodeId(String(value))}
-                placeholder={t('common.select')}
-              />
-            </FormField>
-          </div>
         )}
       />
       <GenericSidebar
@@ -584,7 +603,6 @@ export default function TunnelsPage() {
         )}
       >
         <FormStack>
-          {formError ? <p className="sidebar-form-error" role="alert">{formError}</p> : null}
           {editing ? (
             <FormField label={t('tunnels.filterByNode')} required>
               <Select
@@ -672,7 +690,7 @@ export default function TunnelsPage() {
                   placeholder="http://127.0.0.1:8080"
                 />
               </FormField>
-              <FormField label={translateField(t, 'domains')} required={httpAccess === 'shared' || httpsEnabled} hint={[httpAccess === 'shared' ? t('tunnels.sharedDomainHint') : t('tunnels.dedicatedDomainHint'), httpsEnabled ? t('tunnels.httpsDomainHint') : ''].filter(Boolean).join(' ')}>
+              <FormField label={translateField(t, 'domains')} required={httpAccess === 'shared'} hint={[httpAccess === 'shared' ? t('tunnels.sharedDomainHint') : t('tunnels.dedicatedDomainHint'), httpsEnabled ? t('tunnels.httpsDomainHint') : ''].filter(Boolean).join(' ')}>
                 <textarea
                   className="apple-input w-full min-h-[80px]"
                   value={domainsText}
@@ -702,7 +720,11 @@ export default function TunnelsPage() {
                 {t('tunnels.httpsEnabled')}
               </label>
               {httpsEnabled ? (
-                <FormField label={t('tunnels.httpsCert')} required>
+                <FormField
+                  label={t('tunnels.httpsCert')}
+                  required={httpAccess === 'shared' || parseDomainList(domainsText).length > 0}
+                  hint={httpAccess === 'dedicated' && parseDomainList(domainsText).length === 0 ? t('tunnels.httpsCertOptionalHint') : undefined}
+                >
                   <Select
                     value={certId}
                     options={certOptions}

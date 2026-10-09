@@ -38,6 +38,8 @@ struct ControlState {
 pub(crate) struct LiveSession {
     pub kind: ControlKind,
     pub tx: mpsc::Sender<Vec<u8>>,
+    /// board 从该连接解析出的真实客户端 IP（反代/CDN 头或 TCP peer）
+    pub remote_ip: String,
 }
 
 pub(crate) static SESSIONS: LazyLock<DashMap<Uuid, LiveSession>> = LazyLock::new(DashMap::new);
@@ -68,8 +70,17 @@ async fn ws_upgrade(
     ws: WebSocketUpgrade,
     State(control): State<ControlState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
 ) -> Response {
-    let peer_ip = peer.ip().to_string();
+    let peer_ip =
+        crate::client_ip::resolve(peer, &headers, control.app.trusted_proxies()).to_string();
+    if control.kind == ControlKind::Agent {
+        info!(
+            %peer_ip,
+            tcp_peer = %peer.ip(),
+            "agent websocket remote ip resolved from connection"
+        );
+    }
     ws.on_upgrade(move |socket| handle_socket(socket, control, peer_ip))
 }
 
@@ -162,6 +173,7 @@ async fn handle_socket(socket: WebSocket, control: ControlState, peer_ip: String
                     LiveSession {
                         kind: control.kind,
                         tx: tx.clone(),
+                        remote_ip: peer_ip.clone(),
                     },
                 );
                 hello_done = true;
@@ -260,10 +272,8 @@ async fn handle_socket(socket: WebSocket, control: ControlState, peer_ip: String
                     &pg,
                     node_id,
                     &report.rule,
-                    report.peer.as_deref(),
                     report.tunnel_id,
-                    &report.detail,
-                    report.hit_count,
+                    report.intensity,
                 )
                 .await;
             }
@@ -483,6 +493,8 @@ async fn build_config(pg: &PgPool, kind: ControlKind, id: Uuid) -> Result<BuiltC
                 crate::guard_policy::effective_node_guard_policy(pg, &node.guard_policy).await;
             let cn_http_filing = node.region.eq_ignore_ascii_case("CN")
                 && crate::guard_policy::cn_http_filing_enabled(&guard_policy);
+            let cn_residency = node.region.eq_ignore_ascii_case("CN")
+                && crate::guard_policy::cn_residency_enabled(&guard_policy);
             let domain_whitelist = if cn_http_filing {
                 sqlx::query_scalar::<_, String>("SELECT domain FROM domain_whitelist ORDER BY domain")
                     .fetch_all(pg)
@@ -505,6 +517,7 @@ async fn build_config(pg: &PgPool, kind: ControlKind, id: Uuid) -> Result<BuiltC
                     https_shared_port: node.https_shared_port,
                     guard_policy,
                     cn_http_filing,
+                    cn_residency,
                     domain_whitelist,
                     trusted_proxies: node.trusted_proxies,
                     board_ca_pem,
@@ -570,6 +583,7 @@ struct ClientTunnelRow {
 
 #[derive(sqlx::FromRow)]
 struct HttpDomainRow {
+    https_enabled: bool,
     domain: String,
     tunnel_id: Uuid,
     speed_limit_mbps: i64,
@@ -591,7 +605,7 @@ async fn load_node_tls_certificates(
     // 共享 443 按访客实际访问的隧道域名挂证书。只按证书 SAN 精确匹配时，
     // 开启 HTTPS 后握手没有证书，浏览器就是 ERR_SSL_PROTOCOL_ERROR。
     let rows = sqlx::query_as::<_, NodeTlsRow>(
-        "SELECT DISTINCT lower(cert_name.domain) AS domain, c.cert_pem, c.private_key_pem FROM tunnels t JOIN certificates c ON c.id = t.cert_id CROSS JOIN LATERAL unnest(c.domains || COALESCE((SELECT array_agg(td.domain) FROM tunnel_domains td WHERE td.tunnel_id = t.id AND td.status = 'approved'), ARRAY[]::text[])) AS cert_name(domain) WHERE t.node_id = $1 AND t.https_enabled = TRUE AND t.http_access = 'shared' AND t.enabled = TRUE AND NOT EXISTS (SELECT 1 FROM user_subscriptions qs WHERE qs.user_id = t.user_id AND qs.status = 'active' AND qs.exhausted_period_start IS NOT NULL) AND t.status NOT IN ('deleted', 'suspended', 'pending_review') AND c.not_after > now() AND cert_name.domain <> ''",
+        "SELECT DISTINCT lower(cert_name.domain) AS domain, c.cert_pem, c.private_key_pem FROM tunnels t JOIN certificates c ON c.id = t.cert_id CROSS JOIN LATERAL unnest(c.domains || COALESCE((SELECT array_agg(td.domain) FROM tunnel_domains td WHERE td.tunnel_id = t.id AND td.status = 'approved'), ARRAY[]::text[])) AS cert_name(domain) WHERE t.node_id = $1 AND t.https_enabled = TRUE AND t.protocol = 'http' AND t.enabled = TRUE AND NOT EXISTS (SELECT 1 FROM user_subscriptions qs WHERE qs.user_id = t.user_id AND qs.status = 'active' AND qs.exhausted_period_start IS NOT NULL) AND t.status NOT IN ('deleted', 'suspended', 'pending_review') AND c.not_after > now() AND cert_name.domain <> ''",
     )
     .bind(node_id)
     .fetch_all(pg)
@@ -620,7 +634,7 @@ async fn load_http_domain_routes(
     node_id: Uuid,
 ) -> Result<Vec<HttpDomainRoute>, sqlx::Error> {
     let sql = format!(
-        "SELECT lower(td.domain) AS domain, t.id AS tunnel_id, COALESCE(sub.speed_limit_mbps, t.speed_limit_mbps) AS speed_limit_mbps, COALESCE(sub.max_conns_per_tunnel, t.max_conns) AS max_conns, c.certificate_fingerprint AS client_fingerprint FROM tunnel_domains td JOIN tunnels t ON t.id = td.tunnel_id LEFT JOIN clients c ON c.id = t.client_id {ACTIVE_SUBSCRIPTION_LATERAL} WHERE t.node_id = $1 AND t.http_access = 'shared' AND td.status = 'approved' AND t.enabled = TRUE AND NOT EXISTS (SELECT 1 FROM user_subscriptions qs WHERE qs.user_id = t.user_id AND qs.status = 'active' AND qs.exhausted_period_start IS NOT NULL) AND t.status NOT IN ('deleted', 'suspended', 'pending_review')"
+        "SELECT t.https_enabled, lower(td.domain) AS domain, t.id AS tunnel_id, COALESCE(sub.speed_limit_mbps, t.speed_limit_mbps) AS speed_limit_mbps, COALESCE(sub.max_conns_per_tunnel, t.max_conns) AS max_conns, c.certificate_fingerprint AS client_fingerprint FROM tunnel_domains td JOIN tunnels t ON t.id = td.tunnel_id LEFT JOIN clients c ON c.id = t.client_id {ACTIVE_SUBSCRIPTION_LATERAL} WHERE t.node_id = $1 AND t.http_access = 'shared' AND td.status = 'approved' AND t.enabled = TRUE AND NOT EXISTS (SELECT 1 FROM user_subscriptions qs WHERE qs.user_id = t.user_id AND qs.status = 'active' AND qs.exhausted_period_start IS NOT NULL) AND t.status NOT IN ('deleted', 'suspended', 'pending_review')"
     );
     let rows = sqlx::query_as::<_, HttpDomainRow>(&sql)
     .bind(node_id)
@@ -629,6 +643,7 @@ async fn load_http_domain_routes(
     Ok(rows
         .into_iter()
         .map(|row| HttpDomainRoute {
+            https_enabled: row.https_enabled,
             domain: row.domain,
             tunnel_id: row.tunnel_id,
             client_fingerprint: row.client_fingerprint,
@@ -652,12 +667,13 @@ async fn load_authorized_client_fingerprints(
 
 async fn load_node_tunnels(pg: &PgPool, node_id: Uuid) -> Result<Vec<TunnelSpec>, sqlx::Error> {
     let sql = format!(
-        "SELECT t.id AS tunnel_id, t.revision, t.protocol, t.carrier, t.remote_port, t.target_host, t.target_port, t.target_url, t.client_id, COALESCE(sub.speed_limit_mbps, t.speed_limit_mbps) AS speed_limit_mbps, COALESCE(sub.max_conns_per_tunnel, t.max_conns) AS max_conns, COALESCE(sub.max_new_conns_per_sec, t.max_new_conns_per_sec) AS max_new_conns_per_sec, c.certificate_fingerprint AS client_fingerprint, COALESCE(c.region, '') AS client_region, {TUNNEL_DEDICATED_DOMAINS_SQL} FROM tunnels t LEFT JOIN clients c ON c.id = t.client_id {ACTIVE_SUBSCRIPTION_LATERAL} WHERE t.node_id = $1 AND t.status NOT IN ('deleted', 'pending_review') AND t.enabled = TRUE AND NOT EXISTS (SELECT 1 FROM user_subscriptions qs WHERE qs.user_id = t.user_id AND qs.status = 'active' AND qs.exhausted_period_start IS NOT NULL)"
+        "SELECT t.id AS tunnel_id, t.revision, t.https_enabled, t.protocol, t.carrier, t.remote_port, t.target_host, t.target_port, t.target_url, t.client_id, COALESCE(sub.speed_limit_mbps, t.speed_limit_mbps) AS speed_limit_mbps, COALESCE(sub.max_conns_per_tunnel, t.max_conns) AS max_conns, COALESCE(sub.max_new_conns_per_sec, t.max_new_conns_per_sec) AS max_new_conns_per_sec, c.certificate_fingerprint AS client_fingerprint, COALESCE(c.region, '') AS client_region, {TUNNEL_DEDICATED_DOMAINS_SQL} FROM tunnels t LEFT JOIN clients c ON c.id = t.client_id {ACTIVE_SUBSCRIPTION_LATERAL} WHERE t.node_id = $1 AND t.status NOT IN ('deleted', 'suspended', 'pending_review') AND t.enabled = TRUE AND NOT EXISTS (SELECT 1 FROM user_subscriptions qs WHERE qs.user_id = t.user_id AND qs.status = 'active' AND qs.exhausted_period_start IS NOT NULL)"
     );
     #[derive(sqlx::FromRow)]
     struct NodeTunnelLoadRow {
         tunnel_id: Uuid,
         revision: i64,
+        https_enabled: bool,
         protocol: String,
         carrier: String,
         remote_port: Option<i32>,
@@ -699,6 +715,7 @@ async fn load_node_tunnels(pg: &PgPool, node_id: Uuid) -> Result<Vec<TunnelSpec>
             carrier_secret: crate::carrier_secret::for_carrier(row.tunnel_id, &row.carrier),
             tunnel_id: row.tunnel_id,
             revision: row.revision,
+            https_enabled: row.https_enabled,
             protocol: row.protocol,
             carrier: row.carrier,
             remote_port: row.remote_port,
@@ -794,22 +811,9 @@ async fn verify_token(
     }
 }
 
-fn resolve_client_public_ip(hello: &HelloMessage, peer_ip: &str) -> String {
-    hello
-        .public_ipv4
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .or_else(|| {
-            hello
-                .public_ipv6
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| peer_ip.trim().to_owned())
+/// Client 公网 IP 只取 board 入站连接解析结果，不采用 Client Hello 自报。
+fn connection_client_ip(peer_ip: &str) -> String {
+    peer_ip.trim().to_owned()
 }
 
 async fn persist_hello(
@@ -835,7 +839,7 @@ async fn persist_hello(
             mark_tunnels_peer_online(pg, ControlKind::Node, id).await;
         }
         ControlKind::Agent => {
-            let public_ip = resolve_client_public_ip(hello, peer_ip);
+            let public_ip = connection_client_ip(peer_ip);
             sqlx::query(
                 "UPDATE clients SET online = TRUE, capabilities = $2, version = $3, os = $4, arch = $5, public_ip = $6, last_seen_at = now(), updated_at = now() WHERE id = $1",
             )
@@ -849,14 +853,46 @@ async fn persist_hello(
             .await
             .map_err(|_| "无法更新 Client 状态".to_string())?;
             mark_tunnels_peer_online(pg, ControlKind::Agent, id).await;
-            let pg = pg.clone();
-            let ip = public_ip.clone();
-            tokio::spawn(async move {
-                crate::geoip::refresh_client_region(&pg, id, &ip).await;
-            });
+            refresh_client_endpoint(pg, id, &public_ip).await;
         }
     }
     Ok(())
+}
+
+/// 用当前连接 IP 写回 public_ip 并刷新 geo（重连 / 隧道变更时调用）。
+pub async fn refresh_client_endpoint(pg: &PgPool, client_id: Uuid, remote_ip: &str) {
+    let ip = remote_ip.trim();
+    if ip.is_empty() {
+        return;
+    }
+    if let Err(error) = sqlx::query(
+        "UPDATE clients SET public_ip = $2, last_seen_at = now(), updated_at = now() WHERE id = $1",
+    )
+    .bind(client_id)
+    .bind(ip)
+    .execute(pg)
+    .await
+    {
+        warn!(%client_id, %ip, %error, "failed to update client public_ip from connection");
+        return;
+    }
+    let pg = pg.clone();
+    let ip = ip.to_owned();
+    tokio::spawn(async move {
+        crate::geoip::refresh_client_region(&pg, client_id, &ip).await;
+    });
+}
+
+/// 若该 Client 在线，用其 WebSocket 连接上的真实 IP 刷新 public_ip + geo。
+pub async fn refresh_online_client_endpoint(pg: &PgPool, client_id: Uuid) {
+    let Some(remote_ip) = SESSIONS
+        .get(&client_id)
+        .filter(|session| session.kind == ControlKind::Agent)
+        .map(|session| session.remote_ip.clone())
+    else {
+        return;
+    };
+    refresh_client_endpoint(pg, client_id, &remote_ip).await;
 }
 
 async fn persist_certificate(
@@ -1124,6 +1160,9 @@ pub async fn retarget_tunnel(
     if old_client_id != new_client_id {
         push_client_config(pg, old_client_id).await;
     }
+    if old_node_id != new_node_id || old_client_id != new_client_id {
+        crate::carrier_secret::rotate(tunnel_id);
+    }
     on_tunnel_changed(pg, new_node_id, new_client_id, tunnel_id).await;
 }
 
@@ -1134,8 +1173,8 @@ pub fn defer_on_tunnel_changed(pg: PgPool, node_id: Uuid, client_id: Uuid, tunne
 }
 
 pub async fn on_tunnel_changed(pg: &PgPool, node_id: Uuid, client_id: Uuid, tunnel_id: Uuid) {
-    // 创建/修改/恢复：统一轮换最新密钥，先下发 node，再下发 client（client 主动连）。
-    crate::carrier_secret::rotate(tunnel_id);
+    // 普通修改不轮换 carrier 密钥：node 先于 client 收到新密钥的窗口内数据链路会 mismatch，
+    // 并迫使整条 carrier 重连、打断在途请求。迁移节点/client 时由 retarget_tunnel 轮换。
     let _ = sqlx::query(
         "UPDATE nodes SET config_revision = config_revision + 1, updated_at = now() WHERE id = $1",
     )
@@ -1147,6 +1186,7 @@ pub async fn on_tunnel_changed(pg: &PgPool, node_id: Uuid, client_id: Uuid, tunn
     }
     push_full_node_config(pg, node_id).await;
     push_client_config(pg, client_id).await;
+    refresh_online_client_endpoint(pg, client_id).await;
 }
 
 pub async fn push_tunnel_suspend(pg: &PgPool, node_id: Uuid, client_id: Uuid, tunnel_id: Uuid) {
@@ -1156,6 +1196,7 @@ pub async fn push_tunnel_suspend(pg: &PgPool, node_id: Uuid, client_id: Uuid, tu
     let _ = push_agent_op(client_id, ControlOp::TunnelSuspend { tunnel_id }).await;
     push_full_node_config(pg, node_id).await;
     push_client_config(pg, client_id).await;
+    refresh_online_client_endpoint(pg, client_id).await;
 }
 
 /// client 重连：轮换其全部 TCP 隧道密钥，先推给 node，再由调用方把新配置回给 client。
@@ -1195,6 +1236,7 @@ pub async fn sync_tunnel_offline(pg: &PgPool, node_id: Uuid, client_id: Uuid, tu
     let _ = push_agent_op(client_id, ControlOp::TunnelRemove { tunnel_id }).await;
     push_full_node_config(pg, node_id).await;
     push_client_config(pg, client_id).await;
+    refresh_online_client_endpoint(pg, client_id).await;
 }
 
 /// 重新下发隧道到 node/client（开启、恢复等）。
@@ -1283,12 +1325,13 @@ async fn load_tunnel_spec(
     tunnel_id: Uuid,
 ) -> Result<Option<TunnelSpec>, sqlx::Error> {
     let sql = format!(
-        "SELECT t.id AS tunnel_id, t.revision, t.protocol, t.carrier, t.remote_port, t.target_host, t.target_port, t.target_url, t.client_id, COALESCE(sub.speed_limit_mbps, t.speed_limit_mbps) AS speed_limit_mbps, COALESCE(sub.max_conns_per_tunnel, t.max_conns) AS max_conns, COALESCE(sub.max_new_conns_per_sec, t.max_new_conns_per_sec) AS max_new_conns_per_sec, c.certificate_fingerprint AS client_fingerprint, COALESCE(c.region, '') AS client_region, {TUNNEL_DEDICATED_DOMAINS_SQL} FROM tunnels t LEFT JOIN clients c ON c.id = t.client_id {ACTIVE_SUBSCRIPTION_LATERAL} WHERE t.node_id = $1 AND t.id = $2 AND t.status NOT IN ('deleted', 'pending_review') AND t.enabled = TRUE AND NOT EXISTS (SELECT 1 FROM user_subscriptions qs WHERE qs.user_id = t.user_id AND qs.status = 'active' AND qs.exhausted_period_start IS NOT NULL)"
+        "SELECT t.id AS tunnel_id, t.revision, t.https_enabled, t.protocol, t.carrier, t.remote_port, t.target_host, t.target_port, t.target_url, t.client_id, COALESCE(sub.speed_limit_mbps, t.speed_limit_mbps) AS speed_limit_mbps, COALESCE(sub.max_conns_per_tunnel, t.max_conns) AS max_conns, COALESCE(sub.max_new_conns_per_sec, t.max_new_conns_per_sec) AS max_new_conns_per_sec, c.certificate_fingerprint AS client_fingerprint, COALESCE(c.region, '') AS client_region, {TUNNEL_DEDICATED_DOMAINS_SQL} FROM tunnels t LEFT JOIN clients c ON c.id = t.client_id {ACTIVE_SUBSCRIPTION_LATERAL} WHERE t.node_id = $1 AND t.id = $2 AND t.status NOT IN ('deleted', 'suspended', 'pending_review') AND t.enabled = TRUE AND NOT EXISTS (SELECT 1 FROM user_subscriptions qs WHERE qs.user_id = t.user_id AND qs.status = 'active' AND qs.exhausted_period_start IS NOT NULL)"
     );
     #[derive(sqlx::FromRow)]
     struct SpecRow {
         tunnel_id: Uuid,
         revision: i64,
+        https_enabled: bool,
         protocol: String,
         carrier: String,
         remote_port: Option<i32>,
@@ -1331,6 +1374,7 @@ async fn load_tunnel_spec(
         carrier_secret: crate::carrier_secret::for_carrier(row.tunnel_id, &row.carrier),
         tunnel_id: row.tunnel_id,
         revision: row.revision,
+            https_enabled: row.https_enabled,
         protocol: row.protocol,
         carrier: row.carrier,
         remote_port: row.remote_port,

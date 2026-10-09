@@ -125,7 +125,7 @@
         if (!data || !data.ip) throw new Error('empty')
         ipEl.textContent = data.ip
         const place = [data.country, data.region, data.city].filter(Boolean).join(' ')
-        geoEl.textContent = [place, data.isp].filter(Boolean).join(' · ') || '未知'
+        geoEl.textContent = [place, data.isp].filter(Boolean).join(' ') || '未知'
       })
       .catch(() => {
         ipEl.textContent = '暂时无法获取'

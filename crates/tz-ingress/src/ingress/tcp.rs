@@ -57,6 +57,7 @@ fn spawn_tcp_connection(
     pool: BufferPool,
 ) {
     let guard = endpoint.guard.clone();
+    let block_cert_resolver = endpoint.l4_block_cert_resolver.clone();
     let session = endpoint.carrier_session();
     let tunnel_id = endpoint.tunnel_id;
     tokio::spawn(async move {
@@ -81,20 +82,28 @@ fn spawn_tcp_connection(
         };
 
         let inbound = if guard.block_http_on_l4() {
-            match http_block::maybe_block_browser_http(inbound).await {
+            match http_block::maybe_block_browser_http(inbound, &guard, block_cert_resolver).await {
                 Ok(http_block::BlockOutcome::Blocked) => {
                     guard.report_deny(
                         &Reason::BlockHttpOnL4,
                         peer.ip(),
                         Some(tunnel_id),
-                        "tcp tunnel blocked browser http(s)",
+                        "blocked",
                     );
                     endpoint.traffic.record_reject_guard();
                     return;
                 }
                 Ok(http_block::BlockOutcome::Continue(stream)) => stream,
                 Err(err) => {
-                    tracing::debug!(%peer, %err, "http block page failed");
+                    // stream 已在 maybe_block_browser_http 内消费并随 Err 丢弃关闭。
+                    tracing::warn!(%peer, %err, "http block page failed");
+                    guard.report_deny(
+                        &Reason::BlockHttpOnL4,
+                        peer.ip(),
+                        Some(tunnel_id),
+                        format!("page_send_failed: {err}"),
+                    );
+                    endpoint.traffic.record_reject_guard();
                     return;
                 }
             }

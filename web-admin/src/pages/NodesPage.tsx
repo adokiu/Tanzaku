@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, RefreshCw } from 'lucide-react'
+import { Download, Plus, RefreshCw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { buildEntityListLeadingColumns } from '@/components/EntityListLeadingCells'
 import { CountryRegionSelect } from '@/components/CountryRegionSelect'
@@ -13,9 +13,10 @@ import { EntityList } from '@/components/EntityListPage/EntityListPage'
 import { FormField, FormStack } from '@/components/FormField'
 import { GenericSidebar } from '@/components/GenericSidebar/GenericSidebar'
 import { Input } from '@/components/Input'
-import { Modal } from '@/components/Modal/Modal'
+import { InstallDialog } from '@/components/InstallDialog'
 import { PageListHeader } from '@/components/PageListHeader'
 import { translateApiError } from '@/i18n/apiError'
+import { toast } from '@/stores/toast'
 import { translateField } from '@/i18n/fieldLabel'
 import { formatDateTime } from '@/utils/formatDateTime'
 import {
@@ -154,9 +155,7 @@ export default function NodesPage() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [form, setForm] = useState(initialForm)
-  const [formError, setFormError] = useState('')
-  const [issuedToken, setIssuedToken] = useState('')
-  const [tokenModalOpen, setTokenModalOpen] = useState(false)
+  const [installTarget, setInstallTarget] = useState<{ id: string; name: string; token?: string } | null>(null)
   const [groupSearch, setGroupSearch] = useState('')
 
   const catalog = useQuery({
@@ -186,14 +185,13 @@ export default function NodesPage() {
       setSidebarOpen(false)
       setEditingId(null)
       setForm(initialForm)
-      setFormError('')
       setGroupSearch('')
-      setIssuedToken(node.token)
-      setTokenModalOpen(true)
+      setInstallTarget({ id: node.id, name: form.name, token: node.token })
       await queryClient.invalidateQueries({ queryKey: ['admin-nodes'] })
       await queryClient.invalidateQueries({ queryKey: ['admin-node-groups'] })
+      toast.success(t('common.createSuccess'))
     },
-    onError: (error) => setFormError(translateApiError(t, error)),
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const update = useMutation({
@@ -202,12 +200,12 @@ export default function NodesPage() {
       setSidebarOpen(false)
       setEditingId(null)
       setForm(initialForm)
-      setFormError('')
       setGroupSearch('')
       await queryClient.invalidateQueries({ queryKey: ['admin-nodes'] })
       await queryClient.invalidateQueries({ queryKey: ['admin-node-groups'] })
+      toast.success(t('common.saveSuccess'))
     },
-    onError: (error) => setFormError(translateApiError(t, error)),
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const setEnabled = useMutation({
@@ -216,8 +214,9 @@ export default function NodesPage() {
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['admin-nodes'] })
+      toast.success(t('common.operationSuccess'))
     },
-    onError: (error) => window.alert(translateApiError(t, error)),
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const remove = useMutation({
@@ -226,8 +225,9 @@ export default function NodesPage() {
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['admin-nodes'] })
+      toast.success(t('common.deleteSuccess'))
     },
-    onError: (error) => window.alert(translateApiError(t, error)),
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const columns: Column<NodeListItem>[] = useMemo(() => [
@@ -292,6 +292,10 @@ export default function NodesPage() {
           <button type="button" className="data-table-link-btn" onClick={() => openEdit(row.id)}>
             {t('common.edit')}
           </button>
+          <button type="button" className="data-table-link-btn" onClick={() => setInstallTarget({ id: row.id, name: row.name })}>
+            <Download size={12} style={{ verticalAlign: '-1px', marginRight: 2 }} />
+            {t('install.action')}
+          </button>
           <button
             type="button"
             className="data-table-link-btn"
@@ -317,7 +321,6 @@ export default function NodesPage() {
 
   function updateField<K extends keyof NodeForm>(key: K, value: NodeForm[K]) {
     setForm((current) => ({ ...current, [key]: value }))
-    setFormError('')
   }
 
   function openCreate() {
@@ -327,13 +330,11 @@ export default function NodesPage() {
       protocols: catalog.data?.protocols ?? [],
       carriers: emptyCarriers(catalog.data, true),
     })
-    setFormError('')
     setGroupSearch('')
     setSidebarOpen(true)
   }
 
   async function openEdit(id: string) {
-    setFormError('')
     setGroupSearch('')
     try {
       const detail = (await apiClient.get(`/v1/admin/nodes/${id}`)).data as NodeDetail
@@ -341,7 +342,7 @@ export default function NodesPage() {
       setForm(detailToForm(detail, catalog.data))
       setSidebarOpen(true)
     } catch (error) {
-      window.alert(translateApiError(t, error))
+      toast.error(translateApiError(t, error))
     }
   }
 
@@ -352,7 +353,6 @@ export default function NodesPage() {
         ? current.protocols.filter((item) => item !== kind)
         : [...current.protocols, kind],
     }))
-    setFormError('')
   }
 
   function toggleCarrier(kind: string, enabled: boolean) {
@@ -363,7 +363,6 @@ export default function NodesPage() {
         [kind]: { port: current.carriers[kind]?.port || '7000', enabled },
       },
     }))
-    setFormError('')
   }
 
   function setCarrierPort(kind: string, port: string) {
@@ -374,25 +373,23 @@ export default function NodesPage() {
         [kind]: { port, enabled: current.carriers[kind]?.enabled ?? false },
       },
     }))
-    setFormError('')
   }
 
   function submitForm() {
-    setFormError('')
     if (!form.region.trim()) {
-      setFormError(t('messages.regionRequired'))
+      toast.error(t('messages.regionRequired'))
       return
     }
     if (form.node_group_names.length === 0) {
-      setFormError(t('messages.nodeGroupRequired'))
+      toast.error(t('messages.nodeGroupRequired'))
       return
     }
     if (form.protocols.length === 0) {
-      setFormError(t('node.protocolRequired'))
+      toast.error(t('node.protocolRequired'))
       return
     }
     if (!(catalog.data?.carriers ?? []).some((carrier) => form.carriers[carrier.kind]?.enabled)) {
-      setFormError(t('node.carrierRequired'))
+      toast.error(t('node.carrierRequired'))
       return
     }
     if (editingId) {
@@ -407,7 +404,6 @@ export default function NodesPage() {
   return (
     <section className="page-container page-container--entity-list">
       <PageListHeader
-        title={t('pages.nodes')}
         actions={(
           <>
             <Button size="sm" onClick={openCreate}>
@@ -442,7 +438,6 @@ export default function NodesPage() {
         )}
       >
         <FormStack>
-          {formError ? <p className="sidebar-form-error" role="alert">{formError}</p> : null}
           <FormField label={translateField(t, 'node_name')} required>
             <Input value={form.name} onChange={(event) => updateField('name', event.target.value)} maxLength={100} required />
           </FormField>
@@ -517,12 +512,15 @@ export default function NodesPage() {
           </FormField>
         </FormStack>
       </GenericSidebar>
-      <Modal open={tokenModalOpen} onClose={() => setTokenModalOpen(false)} title={translateField(t, 'one_time_node_token')} footer={(
-        <Button onClick={() => setTokenModalOpen(false)}>{t('common.save')}</Button>
-      )}>
-        <p className="mb-3 text-sm text-muted-foreground">{t('messages.nodeCreated')}</p>
-        <Input readOnly value={issuedToken} className="font-mono text-xs" />
-      </Modal>
+      <InstallDialog
+        open={installTarget !== null}
+        onClose={() => setInstallTarget(null)}
+        role="server"
+        name={installTarget?.name ?? ''}
+        tokenEndpoint={`/v1/admin/nodes/${installTarget?.id ?? ''}/token`}
+        defaultBoard={window.location.origin}
+        initialToken={installTarget?.token}
+      />
     </section>
   )
 }

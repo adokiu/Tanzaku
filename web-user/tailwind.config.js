@@ -4,8 +4,9 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['-apple-system', 'BlinkMacSystemFont', "'SF Pro Text'", "'PingFang SC'", "'Microsoft YaHei'", 'sans-serif'],
-        display: ['-apple-system', 'BlinkMacSystemFont', "'SF Pro Display'", "'PingFang SC'", 'sans-serif'],
+        sans: ['var(--font-family)'],
+        number: ['var(--font-family-number)'],
+        display: ['var(--font-family)'],
       },
       colors: {
         border: 'hsl(var(--border))',

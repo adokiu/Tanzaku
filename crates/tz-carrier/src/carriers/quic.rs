@@ -1,4 +1,5 @@
 #[cfg(feature = "quic")]
+use portable_atomic::AtomicU64;
 use crate::{
     quic_io::{read_carrier_bind, write_carrier_bind, QuicIo},
     quic_transport::{bind_udp_endpoint, connect},
@@ -18,7 +19,7 @@ use bytes::Bytes;
 use std::{
     net::SocketAddr,
     sync::{
-        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         Arc,
     },
 };
@@ -80,6 +81,12 @@ async fn finish_quic_session(
     let connection = incoming
         .await
         .map_err(|err| CarrierError::Io(std::io::Error::other(err)))?;
+    let remote = connection.remote_address();
+    let cn_residency = node_config.load().cn_residency;
+    if let Err(err) = crate::cn_residency::enforce_peer_cn(cn_residency, remote).await {
+        connection.close(1u32.into(), b"cn residency");
+        return Err(CarrierError::Io(err));
+    }
     let (tunnel_id, client_id) =
         match tokio::time::timeout(CARRIER_BIND_TIMEOUT, read_carrier_bind(&connection)).await {
             Ok(Ok(bound)) => bound,
@@ -104,7 +111,7 @@ async fn finish_quic_session(
         )));
     }
     tracing::info!(
-        remote = %connection.remote_address(),
+        %remote,
         %tunnel_id,
         %client_id,
         "quic carrier session ready"

@@ -1,6 +1,9 @@
 pub mod carrier_stream;
+pub mod cn_residency;
 #[cfg(feature = "tcp")]
 pub mod tcp_enc;
+#[cfg(feature = "tcp")]
+pub mod tcp_mux;
 pub mod mux;
 pub mod registry;
 pub mod stream_preamble;

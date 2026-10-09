@@ -63,7 +63,13 @@ export default function TunnelListPage() {
       {tunnels.query.isError ? <p className="page-card p-5 text-sm text-apple-red" role="alert">{apiError(tunnels.query.error)}</p> : <DataTable columns={columns} data={tunnels.items} rowKey={(row) => row.id} loading={tunnels.query.isPending} pagination={tunnels.pagination} onPageChange={tunnels.setPage} onSizeChange={tunnels.setSize} />}
       {tunnels.items.length > 0 && <div className="mt-4 flex flex-wrap gap-2">{tunnels.items.map((tunnel) => (
         <div className="page-card flex w-full items-center justify-between gap-4 p-4" key={tunnel.id}>
-          <div className="min-w-0"><p className="truncate font-medium">{tunnel.name}</p><p className="truncate text-sm text-muted-foreground">{tunnel.target_url ?? `${tunnel.target_host}:${tunnel.target_port}`} · {tunnel.last_error ?? tunnel.status}</p></div>
+          <div className="min-w-0">
+            <p className="truncate font-medium">{tunnel.name}</p>
+            <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-sm text-muted-foreground">
+              <span className="truncate">{tunnel.target_url ?? `${tunnel.target_host}:${tunnel.target_port}`}</span>
+              <span className="rounded border border-border bg-muted px-2 py-0.5 text-xs text-muted-foreground">{tunnel.last_error ?? tunnel.status}</span>
+            </div>
+          </div>
           <Button type="button" variant="secondary" loading={remove.isPending} onClick={() => remove.mutate(tunnel.id)}>删除</Button>
         </div>
       ))}</div>}

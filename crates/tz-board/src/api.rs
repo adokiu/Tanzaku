@@ -1,11 +1,14 @@
 mod certificates;
+mod channels;
 mod clients;
 pub(crate) mod csrf;
 mod domains;
 mod live;
 mod management;
+mod me;
 mod orders;
 mod nodes;
+pub(crate) mod payments;
 mod plans;
 mod themes;
 mod tunnels;
@@ -47,6 +50,14 @@ pub fn admin_router() -> Router<Arc<AppState>> {
             "/api/v1/admin/nodes/{node_id}/enabled",
             patch(set_admin_node_enabled),
         )
+        .route(
+            "/api/v1/admin/nodes/{node_id}/token",
+            get(get_node_token).post(reset_node_token),
+        )
+        .route(
+            "/api/v1/admin/nodes/{node_id}/token",
+            get(get_node_token).post(reset_node_token),
+        )
         .merge(users::admin_router())
         .merge(plans::admin_router())
         .merge(clients::admin_router())
@@ -67,6 +78,8 @@ pub fn user_router() -> Router<Arc<AppState>> {
         .merge(certificates::user_router())
         .merge(live::router())
         .merge(orders::user_router())
+        .merge(me::user_router())
+        .merge(channels::user_router())
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -184,6 +197,82 @@ struct NodeCreated {
     id: Uuid,
     token: String,
     token_prefix: String,
+}
+
+/// 节点 / Client 凭据再次查看：旧版创建的记录未保存明文，`token` 为 null，需重置。
+#[derive(Debug, Serialize)]
+pub(super) struct AgentTokenView {
+    pub(super) token: Option<String>,
+    pub(super) token_prefix: String,
+}
+
+/// 生成新的接入凭据：(明文, SHA-256, 前缀)。明文入库供面板再次查看与生成安装命令。
+pub(super) fn new_agent_token(
+    failure: &'static str,
+) -> Result<(String, Vec<u8>, String), (StatusCode, Json<Value>)> {
+    let mut token_bytes = [0u8; 32];
+    getrandom::fill(&mut token_bytes)
+        .map_err(|_| response_error(unavailable(StatusCode::INTERNAL_SERVER_ERROR, failure)))?;
+    let token = token_bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let hash = Sha256::digest(token.as_bytes()).to_vec();
+    let prefix = token.chars().take(12).collect::<String>();
+    Ok((token, hash, prefix))
+}
+
+async fn get_node_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(node_id): Path<Uuid>,
+) -> Result<Json<AgentTokenView>, (StatusCode, Json<Value>)> {
+    let (pg, _) = state
+        .database_for(&headers, UserRole::Admin)
+        .await
+        .map_err(response_error)?;
+    let row: Option<(Option<String>, String)> =
+        sqlx::query_as("SELECT token, token_prefix FROM nodes WHERE id = $1")
+            .bind(node_id)
+            .fetch_optional(&pg)
+            .await
+            .map_err(database_error)?;
+    let Some((token, token_prefix)) = row else {
+        return Err(response_error(unavailable(StatusCode::NOT_FOUND, "节点不存在")));
+    };
+    Ok(Json(AgentTokenView { token, token_prefix }))
+}
+
+async fn reset_node_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(node_id): Path<Uuid>,
+) -> Result<Json<AgentTokenView>, (StatusCode, Json<Value>)> {
+    let (pg, actor) = state
+        .database_for(&headers, UserRole::Admin)
+        .await
+        .map_err(response_error)?;
+    let (token, token_hash, token_prefix) = new_agent_token("无法生成节点凭据")?;
+    let mut transaction = pg.begin().await.map_err(database_error)?;
+    let updated = sqlx::query(
+        "UPDATE nodes SET token = $2, token_hash = $3, token_prefix = $4, updated_at = now() WHERE id = $1",
+    )
+    .bind(node_id)
+    .bind(&token)
+    .bind(token_hash)
+    .bind(&token_prefix)
+    .execute(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    if updated.rows_affected() == 0 {
+        return Err(response_error(unavailable(StatusCode::NOT_FOUND, "节点不存在")));
+    }
+    write_audit(&mut transaction, actor.user_id, "node.token_reset", "node", node_id).await?;
+    transaction.commit().await.map_err(database_error)?;
+    Ok(Json(AgentTokenView {
+        token: Some(token),
+        token_prefix,
+    }))
 }
 
 async fn dataplane_catalog(
@@ -750,23 +839,11 @@ async fn create_node(
         .map_err(response_error)?;
     let validated = validate_create_node_request(&request)?;
     let group_names = normalize_node_group_names(&request.node_group_names)?;
-    let mut token_bytes = [0u8; 32];
-    getrandom::fill(&mut token_bytes).map_err(|_| {
-        response_error(unavailable(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "无法生成节点凭据",
-        ))
-    })?;
-    let token = token_bytes
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let token_hash = Sha256::digest(token.as_bytes()).to_vec();
-    let token_prefix = token.chars().take(12).collect::<String>();
+    let (token, token_hash, token_prefix) = new_agent_token("无法生成节点凭据")?;
     let id = Uuid::new_v4();
     let mut transaction = pg.begin().await.map_err(database_error)?;
     sqlx::query(
-        "INSERT INTO nodes (id, name, region, public_host, bind_addr, token_hash, token_prefix, protocols, carrier_ports, tcp_port_ranges, udp_port_ranges, port_exclude, http_shared_port, https_shared_port) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+        "INSERT INTO nodes (id, name, region, public_host, bind_addr, token_hash, token_prefix, protocols, carrier_ports, tcp_port_ranges, udp_port_ranges, port_exclude, http_shared_port, https_shared_port, token) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
     )
     .bind(id)
     .bind(validated.name)
@@ -782,6 +859,7 @@ async fn create_node(
     .bind(validated.port_exclude)
     .bind(i32::from(validated.http_port))
     .bind(i32::from(validated.https_port))
+    .bind(&token)
     .execute(&mut *transaction)
     .await
     .map_err(|_| response_error(unavailable(StatusCode::CONFLICT, "节点名称已存在或数据库不可用")))?;
@@ -1004,13 +1082,26 @@ pub(super) async fn write_audit(
     target_type: &str,
     target_id: Uuid,
 ) -> Result<(), (StatusCode, Json<Value>)> {
+    write_audit_with_ip(transaction, actor, action, target_type, target_id, None).await
+}
+
+pub(super) async fn write_audit_with_ip(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    actor: Uuid,
+    action: &str,
+    target_type: &str,
+    target_id: Uuid,
+    remote_ip: Option<std::net::IpAddr>,
+) -> Result<(), (StatusCode, Json<Value>)> {
     sqlx::query(
-        "INSERT INTO audit_logs (actor_id, action, target_type, target_id) VALUES ($1, $2, $3, $4)",
+        "INSERT INTO audit_logs (actor_id, action, target_type, target_id, remote_ip) \
+         VALUES ($1, $2, $3, $4, $5::inet)",
     )
     .bind(actor)
     .bind(action)
     .bind(target_type)
     .bind(target_id.to_string())
+    .bind(remote_ip.map(|ip| ip.to_string()))
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;

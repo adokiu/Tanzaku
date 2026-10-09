@@ -115,10 +115,10 @@ pub async fn serve(listener: SharedHttpListener) -> io::Result<()> {
                     peer: peer.ip(),
                     trust: SourceTrust::Tcp,
                     trusted_proxy: false,
-                    tunnel_id: None,
+                    tunnel_id: Some(route.tunnel_id),
                 };
                 let verdict = guard.check_conn(&ctx);
-                if guard.record_if_denied(&verdict, peer.ip(), None) {
+                if guard.record_if_denied(&verdict, peer.ip(), Some(route.tunnel_id)) {
                     route.traffic.record_reject_guard();
                     if let Ok(std_stream) = inbound.into_std() {
                         let socket = socket2::Socket::from(std_stream);

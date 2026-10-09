@@ -59,6 +59,8 @@ pub const CARRIER_BIND_TIMEOUT: std::time::Duration = std::time::Duration::from_
 
 pub const BIND_ACK_OK: u8 = 0;
 pub const BIND_ACK_DENIED: u8 = 1;
+/// 中国大陆节点按对端 IP 地理拒绝（residency）。
+pub const BIND_ACK_RESIDENCY: u8 = 2;
 
 /// 每条 TCP 链路双方各出的随机数，参与派生链路密钥，避免同一密钥下 nonce 复用。
 pub const LINK_NONCE_LEN: usize = 16;
@@ -76,12 +78,32 @@ pub const LINK_CONFIRM: &[u8; 4] = b"TZK1";
 
 pub async fn read_carrier_bind_ack(stream: &mut tokio::net::TcpStream) -> std::io::Result<LinkNonce> {
     let mut ack = [0_u8; 1];
-    tokio::io::AsyncReadExt::read_exact(stream, &mut ack).await?;
-    if ack[0] != BIND_ACK_OK {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "carrier bind rejected",
-        ));
+    tokio::io::AsyncReadExt::read_exact(stream, &mut ack)
+        .await
+        .map_err(|err| {
+            if err.kind() == std::io::ErrorKind::UnexpectedEof {
+                std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "node closed carrier link before bind ack (check node log: tcp carrier link setup failed)",
+                )
+            } else {
+                err
+            }
+        })?;
+    match ack[0] {
+        BIND_ACK_OK => {}
+        BIND_ACK_RESIDENCY => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "carrier bind rejected by cn residency (peer IP geo not CN or lookup failed)",
+            ));
+        }
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "carrier bind rejected",
+            ));
+        }
     }
     let mut nonce = [0_u8; LINK_NONCE_LEN];
     tokio::io::AsyncReadExt::read_exact(stream, &mut nonce).await?;

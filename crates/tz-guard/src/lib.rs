@@ -1,4 +1,5 @@
 pub mod pipeline;
+pub mod token_bucket;
 pub mod types;
 
 include!(concat!(env!("OUT_DIR"), "/guards.inc.rs"));

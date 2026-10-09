@@ -1,13 +1,11 @@
 import { useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { RefreshCw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 import apiClient from '@/api/client'
-import { Button } from '@/components/Button'
 import { PageListHeader } from '@/components/PageListHeader'
 import { translateApiError } from '@/i18n/apiError'
-import { formatDateTime } from '@/utils/formatDateTime'
+import { formatDateTime, formatDurationSecs } from '@/utils/formatDateTime'
 import { formatBytes, formatNetSpeed } from '@/utils/formatMetrics'
 import { translateGuardRule } from './security/policyShared'
 import './DashboardPage.css'
@@ -38,9 +36,9 @@ type Dashboard = {
     id: number
     node_name: string
     rule: string
-    peer: string | null
-    detail: string
-    hit_count: number
+    tunnel_id: string | null
+    intensity: number
+    duration_secs: number
     last_seen_at: string
   }[]
 }
@@ -62,15 +60,7 @@ export default function DashboardPage() {
 
   return (
     <section className="page-container">
-      <PageListHeader
-        title={t('pages.dashboard')}
-        actions={(
-          <Button variant="secondary" size="sm" onClick={() => void query.refetch()} disabled={query.isFetching}>
-            <RefreshCw size={16} className={query.isFetching ? 'animate-spin' : ''} />
-            {t('common.refresh')}
-          </Button>
-        )}
-      />
+      <PageListHeader />
       {query.isError ? (
         <p className="page-card p-5 text-sm text-apple-red" role="alert">{translateApiError(t, query.error)}</p>
       ) : !data ? (
@@ -182,9 +172,17 @@ export default function DashboardPage() {
                   <li key={event.id}>
                     <span className="dash-event__rule">{translateGuardRule(t, event.rule)}</span>
                     <span className="dash-event__meta">
-                      {[event.node_name, event.peer, event.detail, formatDateTime(event.last_seen_at)].filter(Boolean).join(' · ')}
+                      {[
+                        event.node_name,
+                        t('dashboard.intensity', { n: count(event.intensity) }),
+                        formatDurationSecs(event.duration_secs),
+                        formatDateTime(event.last_seen_at),
+                      ]
+                        .filter(Boolean)
+                        .map((item) => (
+                          <span key={String(item)} className="dash-event__tag">{item}</span>
+                        ))}
                     </span>
-                    <span className="dash-event__hits">{t('dashboard.hits', { n: count(event.hit_count) })}</span>
                   </li>
                 ))}
               </ul>
@@ -343,7 +341,7 @@ function SeriesChart({
       </svg>
       <p className="dash-tip">
         {active
-          ? `${formatLabel(active.at)} · ${formatBytes(active.bytes_in)} / ${formatBytes(active.bytes_out)}`
+          ? `${formatLabel(active.at)}  ${formatBytes(active.bytes_in)} / ${formatBytes(active.bytes_out)}`
           : ' '}
       </p>
     </>

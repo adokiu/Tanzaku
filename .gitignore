@@ -1,6 +1,7 @@
 /target/
 /data/
 dist/
+crates/tz-board/.web-admin-embed
 node_modules/
 !web/dist/
 web/dist/*

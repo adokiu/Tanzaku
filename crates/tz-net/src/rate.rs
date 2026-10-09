@@ -1,9 +1,10 @@
+use portable_atomic::AtomicU64;
 use std::{
     collections::HashMap,
     num::{NonZeroU64, NonZeroUsize},
     sync::{
         Arc, Mutex, Weak,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };

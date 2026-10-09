@@ -1,0 +1,49 @@
+.account-security__email {
+  margin: 0 0 1.25rem;
+  font-size: 0.9rem;
+  color: var(--muted-foreground, #667084);
+}
+
+.account-security__email strong {
+  margin-left: 0.4rem;
+  font-weight: 600;
+  color: var(--foreground, inherit);
+}
+
+.account-security__grid {
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  align-items: start;
+}
+
+.account-security__card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.95rem;
+  padding: 1.25rem 1.35rem;
+}
+
+.account-security__card-title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.account-security__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.account-security__field span {
+  font-size: 0.8125rem;
+  font-weight: 550;
+  color: var(--muted-foreground, #667084);
+}
+
+.account-security__card .btn,
+.account-security__card button {
+  align-self: flex-start;
+  margin-top: 0.25rem;
+}

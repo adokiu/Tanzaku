@@ -1,6 +1,7 @@
 use super::{database_error, response_error, write_audit};
-use crate::setup::{AppState, UserRole, unavailable};
 use crate::page::{Page, PageQuery};
+use crate::setup::{AppState, UserRole, unavailable};
+use crate::subscription_period;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -41,6 +42,14 @@ struct PlanRow {
     allowed_protocols: Vec<String>,
     traffic_count_mode: String,
     enabled: bool,
+    price_month_cents: Option<i64>,
+    price_quarter_cents: Option<i64>,
+    price_half_year_cents: Option<i64>,
+    price_year_cents: Option<i64>,
+    price_two_year_cents: Option<i64>,
+    price_three_year_cents: Option<i64>,
+    price_traffic_pack_cents: Option<i64>,
+    price_reset_pack_cents: Option<i64>,
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -59,13 +68,21 @@ struct PlanListRow {
     allowed_protocols: Vec<String>,
     traffic_count_mode: String,
     enabled: bool,
+    price_month_cents: Option<i64>,
+    price_quarter_cents: Option<i64>,
+    price_half_year_cents: Option<i64>,
+    price_year_cents: Option<i64>,
+    price_two_year_cents: Option<i64>,
+    price_three_year_cents: Option<i64>,
+    price_traffic_pack_cents: Option<i64>,
+    price_reset_pack_cents: Option<i64>,
     node_group_ids: Vec<Uuid>,
     node_group_names: Vec<String>,
 }
 
-const PLAN_LIST_SQL: &str = "SELECT p.id, p.name, p.description, p.speed_limit_mbps, p.max_conns_per_tunnel, p.max_new_conns_per_sec, p.max_tunnels, p.allow_custom_port, p.traffic_quota_bytes, p.traffic_period, p.duration_days, p.allowed_protocols, p.traffic_count_mode, p.enabled, COALESCE(array_agg(png.node_group_id ORDER BY ng.name) FILTER (WHERE png.node_group_id IS NOT NULL), '{}') AS node_group_ids, COALESCE(array_agg(ng.name ORDER BY ng.name) FILTER (WHERE ng.name IS NOT NULL), '{}') AS node_group_names FROM plans p LEFT JOIN plan_node_groups png ON png.plan_id = p.id LEFT JOIN node_groups ng ON ng.id = png.node_group_id GROUP BY p.id ORDER BY p.name";
+const PLAN_LIST_SQL: &str = "SELECT p.id, p.name, p.description, p.speed_limit_mbps, p.max_conns_per_tunnel, p.max_new_conns_per_sec, p.max_tunnels, p.allow_custom_port, p.traffic_quota_bytes, p.traffic_period, p.duration_days, p.allowed_protocols, p.traffic_count_mode, p.enabled, p.price_month_cents, p.price_quarter_cents, p.price_half_year_cents, p.price_year_cents, p.price_two_year_cents, p.price_three_year_cents, p.price_traffic_pack_cents, p.price_reset_pack_cents, COALESCE(array_agg(png.node_group_id ORDER BY ng.name) FILTER (WHERE png.node_group_id IS NOT NULL), '{}') AS node_group_ids, COALESCE(array_agg(ng.name ORDER BY ng.name) FILTER (WHERE ng.name IS NOT NULL), '{}') AS node_group_names FROM plans p LEFT JOIN plan_node_groups png ON png.plan_id = p.id LEFT JOIN node_groups ng ON ng.id = png.node_group_id GROUP BY p.id ORDER BY p.name";
 
-const PLAN_RETURNING: &str = "RETURNING id, name, description, speed_limit_mbps, max_conns_per_tunnel, max_new_conns_per_sec, max_tunnels, allow_custom_port, traffic_quota_bytes, traffic_period, duration_days, allowed_protocols, traffic_count_mode, enabled";
+const PLAN_RETURNING: &str = "RETURNING id, name, description, speed_limit_mbps, max_conns_per_tunnel, max_new_conns_per_sec, max_tunnels, allow_custom_port, traffic_quota_bytes, traffic_period, duration_days, allowed_protocols, traffic_count_mode, enabled, price_month_cents, price_quarter_cents, price_half_year_cents, price_year_cents, price_two_year_cents, price_three_year_cents, price_traffic_pack_cents, price_reset_pack_cents";
 
 #[derive(Deserialize)]
 struct PlanBody {
@@ -81,6 +98,14 @@ struct PlanBody {
     allowed_protocols: Vec<String>,
     traffic_count_mode: Option<String>,
     node_group_ids: Vec<Uuid>,
+    price_month_cents: Option<i64>,
+    price_quarter_cents: Option<i64>,
+    price_half_year_cents: Option<i64>,
+    price_year_cents: Option<i64>,
+    price_two_year_cents: Option<i64>,
+    price_three_year_cents: Option<i64>,
+    price_traffic_pack_cents: Option<i64>,
+    price_reset_pack_cents: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -107,10 +132,7 @@ fn validate_plan_body(request: &PlanBody) -> Result<(), (StatusCode, Json<serde_
         )));
     }
     if request.traffic_quota_bytes.is_some_and(|quota| quota <= 0)
-        || !matches!(
-            request.traffic_period.as_str(),
-            "day" | "week" | "month" | "quarter" | "year" | "lifetime"
-        )
+        || !subscription_period::is_plan_reset_mode(&request.traffic_period)
         || request.allowed_protocols.is_empty()
         || request
             .allowed_protocols
@@ -120,18 +142,32 @@ fn validate_plan_body(request: &PlanBody) -> Result<(), (StatusCode, Json<serde_
     {
         return Err(response_error(unavailable(
             StatusCode::BAD_REQUEST,
-            "套餐节点组、协议或周期配置无效",
+            "套餐节点组、协议或流量重置方式无效",
         )));
     }
     let count_mode = request.traffic_count_mode.as_deref().unwrap_or("sum");
-    if !matches!(
-        count_mode,
-        "sum" | "inbound" | "outbound" | "max"
-    ) {
+    if !matches!(count_mode, "sum" | "inbound" | "outbound" | "max") {
         return Err(response_error(unavailable(
             StatusCode::BAD_REQUEST,
             "流量统计方式无效",
         )));
+    }
+    for cents in [
+        request.price_month_cents,
+        request.price_quarter_cents,
+        request.price_half_year_cents,
+        request.price_year_cents,
+        request.price_two_year_cents,
+        request.price_three_year_cents,
+        request.price_traffic_pack_cents,
+        request.price_reset_pack_cents,
+    ] {
+        if cents.is_some_and(|value| value < 0) {
+            return Err(response_error(unavailable(
+                StatusCode::BAD_REQUEST,
+                "套餐价格不能为负数",
+            )));
+        }
     }
     Ok(())
 }
@@ -217,7 +253,7 @@ async fn create_plan(
     let mut transaction = pg.begin().await.map_err(database_error)?;
     let plan_id = Uuid::new_v4();
     let plan = sqlx::query_as::<_, PlanRow>(&format!(
-        "INSERT INTO plans (id, name, description, speed_limit_mbps, max_conns_per_tunnel, max_new_conns_per_sec, max_tunnels, allow_custom_port, traffic_quota_bytes, traffic_period, duration_days, allowed_protocols, traffic_count_mode) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) {PLAN_RETURNING}",
+        "INSERT INTO plans (id, name, description, speed_limit_mbps, max_conns_per_tunnel, max_new_conns_per_sec, max_tunnels, allow_custom_port, traffic_quota_bytes, traffic_period, duration_days, allowed_protocols, traffic_count_mode, price_month_cents, price_quarter_cents, price_half_year_cents, price_year_cents, price_two_year_cents, price_three_year_cents, price_traffic_pack_cents, price_reset_pack_cents) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) {PLAN_RETURNING}",
     ))
     .bind(plan_id)
     .bind(name)
@@ -232,6 +268,14 @@ async fn create_plan(
     .bind(None::<i32>)
     .bind(&request.allowed_protocols)
     .bind(request.traffic_count_mode.unwrap_or_else(|| "sum".into()))
+    .bind(request.price_month_cents)
+    .bind(request.price_quarter_cents)
+    .bind(request.price_half_year_cents)
+    .bind(request.price_year_cents)
+    .bind(request.price_two_year_cents)
+    .bind(request.price_three_year_cents)
+    .bind(request.price_traffic_pack_cents)
+    .bind(request.price_reset_pack_cents)
     .fetch_one(&mut *transaction)
     .await
     .map_err(|_| response_error(unavailable(StatusCode::CONFLICT, "套餐名称已存在或数据库不可用")))?;
@@ -277,7 +321,7 @@ async fn update_plan(
     let name = request.name.trim();
     let mut transaction = pg.begin().await.map_err(database_error)?;
     let plan = sqlx::query_as::<_, PlanRow>(&format!(
-        "UPDATE plans SET name = $2, description = $3, speed_limit_mbps = $4, max_conns_per_tunnel = $5, max_new_conns_per_sec = $6, max_tunnels = $7, allow_custom_port = $8, traffic_quota_bytes = $9, traffic_period = $10, duration_days = $11, allowed_protocols = $12, traffic_count_mode = $13, updated_at = now() WHERE id = $1 {PLAN_RETURNING}",
+        "UPDATE plans SET name = $2, description = $3, speed_limit_mbps = $4, max_conns_per_tunnel = $5, max_new_conns_per_sec = $6, max_tunnels = $7, allow_custom_port = $8, traffic_quota_bytes = $9, traffic_period = $10, duration_days = $11, allowed_protocols = $12, traffic_count_mode = $13, price_month_cents = $14, price_quarter_cents = $15, price_half_year_cents = $16, price_year_cents = $17, price_two_year_cents = $18, price_three_year_cents = $19, price_traffic_pack_cents = $20, price_reset_pack_cents = $21, updated_at = now() WHERE id = $1 {PLAN_RETURNING}",
     ))
     .bind(plan_id)
     .bind(name)
@@ -292,6 +336,14 @@ async fn update_plan(
     .bind(None::<i32>)
     .bind(&request.allowed_protocols)
     .bind(request.traffic_count_mode.unwrap_or_else(|| "sum".into()))
+    .bind(request.price_month_cents)
+    .bind(request.price_quarter_cents)
+    .bind(request.price_half_year_cents)
+    .bind(request.price_year_cents)
+    .bind(request.price_two_year_cents)
+    .bind(request.price_three_year_cents)
+    .bind(request.price_traffic_pack_cents)
+    .bind(request.price_reset_pack_cents)
     .fetch_one(&mut *transaction)
     .await
     .map_err(|_| response_error(unavailable(StatusCode::CONFLICT, "套餐名称已存在或数据库不可用")))?;

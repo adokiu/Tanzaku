@@ -12,6 +12,7 @@ pub fn admin_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/v1/admin/dashboard", get(dashboard))
         .route("/api/v1/admin/settings", get(list_settings).post(set_setting))
+        .route("/api/v1/admin/settings/mail/test", post(test_mail))
         .route(
             "/api/v1/admin/security/global",
             get(get_global_security).put(update_global_security),
@@ -83,9 +84,9 @@ struct DashboardEvent {
     id: i64,
     node_name: String,
     rule: String,
-    peer: Option<String>,
-    detail: String,
-    hit_count: i32,
+    tunnel_id: Option<Uuid>,
+    intensity: i32,
+    duration_secs: i64,
     last_seen_at: String,
 }
 
@@ -120,6 +121,11 @@ struct SettingRow {
 struct SetSetting {
     key: String,
     value: Value,
+}
+
+#[derive(Deserialize)]
+struct MailTestRequest {
+    to: String,
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -168,10 +174,9 @@ struct GuardEventRow {
     node_id: Uuid,
     node_name: String,
     rule: String,
-    peer: Option<String>,
     tunnel_id: Option<Uuid>,
-    detail: String,
-    hit_count: i32,
+    intensity: i32,
+    duration_secs: i64,
     first_seen_at: String,
     last_seen_at: String,
 }
@@ -316,7 +321,10 @@ async fn dashboard(
     .map_err(database_error)?;
 
     let events = sqlx::query_as::<_, DashboardEvent>(
-        "SELECT e.id, n.name AS node_name, e.rule, host(e.peer)::text AS peer, e.detail, e.hit_count, e.last_seen_at::text AS last_seen_at
+        "SELECT e.id, n.name AS node_name, e.rule, e.tunnel_id,
+                e.hit_count AS intensity,
+                GREATEST(0, EXTRACT(EPOCH FROM (e.last_seen_at - e.first_seen_at))::bigint) AS duration_secs,
+                e.last_seen_at::text AS last_seen_at
          FROM guard_events e JOIN nodes n ON n.id = e.node_id
          ORDER BY e.last_seen_at DESC
          LIMIT 6",
@@ -399,27 +407,47 @@ async fn list_settings(
     .fetch_all(&pg)
     .await
     .map_err(database_error)?;
+    let rows = rows
+        .into_iter()
+        .filter(|row| !crate::system_settings::is_hidden_setting_key(&row.key))
+        .map(|row| SettingRow {
+            value: crate::system_settings::redact_setting_value(&row.key, row.value),
+            ..row
+        })
+        .collect();
     Ok(Json(rows))
 }
 
 async fn set_setting(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    client_ip: crate::client_ip::ClientIp,
     Json(setting): Json<SetSetting>,
 ) -> Result<Json<SettingRow>, (StatusCode, Json<Value>)> {
     let (pg, actor) = state.database_for(&headers, UserRole::Admin).await.map_err(response_error)?;
-    let allowed = match setting.key.as_str() {
-        "registration_enabled" => setting.value.is_boolean(),
-        key if crate::system_settings::is_host_metrics_interval_key(key) => {
-            crate::system_settings::validate_host_metrics_interval(&setting.value)
-        }
-        key if crate::system_settings::is_client_ip_geo_provider_key(key) => {
-            crate::system_settings::validate_client_ip_geo_provider(&setting.value)
-        }
-        _ => false,
-    };
-    if !allowed {
+    if crate::system_settings::is_hidden_setting_key(&setting.key)
+        || !crate::system_settings::validate_writable_setting(&setting.key, &setting.value)
+    {
         return Err(response_error(unavailable(StatusCode::BAD_REQUEST, "不允许修改该设置或值无效")));
+    }
+    // SMTP 密码传空字符串：视为不修改，直接返回当前脱敏值
+    if setting.key == "mail_smtp_password" && setting.value.as_str().is_some_and(str::is_empty) {
+        let current = sqlx::query_as::<_, SettingRow>(
+            "SELECT key, value, updated_at::text AS updated_at FROM system_settings WHERE key = $1",
+        )
+        .bind(&setting.key)
+        .fetch_optional(&pg)
+        .await
+        .map_err(database_error)?;
+        let row = current.unwrap_or(SettingRow {
+            key: setting.key.clone(),
+            value: serde_json::json!(""),
+            updated_at: String::new(),
+        });
+        return Ok(Json(SettingRow {
+            value: crate::system_settings::redact_setting_value(&row.key, row.value),
+            ..row
+        }));
     }
     let mut transaction = pg.begin().await.map_err(database_error)?;
     let row = sqlx::query_as::<_, SettingRow>(
@@ -430,10 +458,16 @@ async fn set_setting(
     .fetch_one(&mut *transaction)
     .await
     .map_err(database_error)?;
-    sqlx::query("INSERT INTO audit_logs (actor_id, action, target_type, target_id, details) VALUES ($1, 'setting.update', 'setting', $2, $3)")
+    let audit_value = if setting.key == "mail_smtp_password" {
+        serde_json::json!({ "set": true })
+    } else {
+        setting.value.clone()
+    };
+    sqlx::query("INSERT INTO audit_logs (actor_id, action, target_type, target_id, details, remote_ip) VALUES ($1, 'setting.update', 'setting', $2, $3, $4::inet)")
         .bind(actor.user_id)
         .bind(&setting.key)
-        .bind(&setting.value)
+        .bind(&audit_value)
+        .bind(client_ip.as_str())
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -441,7 +475,22 @@ async fn set_setting(
     if crate::system_settings::is_host_metrics_interval_key(&setting.key) {
         crate::ws::push_node_configs_to_online_nodes(&pg).await;
     }
-    Ok(Json(row))
+    Ok(Json(SettingRow {
+        value: crate::system_settings::redact_setting_value(&row.key, row.value),
+        ..row
+    }))
+}
+
+async fn test_mail(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<MailTestRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let (pg, _) = state.database_for(&headers, UserRole::Admin).await.map_err(response_error)?;
+    crate::mail::send_test_mail(&pg, &body.to)
+        .await
+        .map_err(|error| response_error(unavailable(StatusCode::BAD_REQUEST, error.to_string())))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 async fn get_global_security(
@@ -457,32 +506,31 @@ async fn get_global_security(
 async fn update_global_security(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    client_ip: crate::client_ip::ClientIp,
     Json(update): Json<SetGlobalSecurity>,
 ) -> Result<Json<GlobalSecurity>, (StatusCode, Json<Value>)> {
     let (pg, actor) = state.database_for(&headers, UserRole::Admin).await.map_err(response_error)?;
     validate_guard_policy(&update.guard_policy)?;
     let mut transaction = pg.begin().await.map_err(database_error)?;
+    crate::guard_policy::save_global_guard_policy(&mut *transaction, &update.guard_policy)
+        .await
+        .map_err(database_error)?;
     sqlx::query(
-        "INSERT INTO system_settings (key, value) VALUES ($1, $2)
-         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
-    )
-    .bind(crate::guard_policy::GLOBAL_GUARD_POLICY_KEY)
-    .bind(&update.guard_policy)
-    .execute(&mut *transaction)
-    .await
-    .map_err(database_error)?;
-    sqlx::query(
-        "INSERT INTO audit_logs (actor_id, action, target_type, target_id, details)
-         VALUES ($1, 'security.global.update', 'setting', $2, $3)",
+        "INSERT INTO audit_logs (actor_id, action, target_type, target_id, details, remote_ip)
+         VALUES ($1, 'security.global.update', 'global_guard_policy', '1', $2, $3::inet)",
     )
     .bind(actor.user_id)
-    .bind(crate::guard_policy::GLOBAL_GUARD_POLICY_KEY)
     .bind(&update.guard_policy)
+    .bind(client_ip.as_str())
     .execute(&mut *transaction)
     .await
     .map_err(database_error)?;
+    // 全局策略变更必须抬升各节点 revision，否则 server 因 revision 未变会跳过 guard.reload。
+    sqlx::query("UPDATE nodes SET config_revision = config_revision + 1, updated_at = now()")
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
     transaction.commit().await.map_err(database_error)?;
-    // 全局策略变更后推送给所有在线节点。
     crate::ws::push_node_configs_to_online_nodes(&pg).await;
     Ok(Json(GlobalSecurity {
         guard_policy: update.guard_policy,
@@ -554,6 +602,7 @@ struct SetNodeSecurity {
 async fn update_node_security(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    client_ip: crate::client_ip::ClientIp,
     Path(node_id): Path<Uuid>,
     Json(update): Json<SetNodeSecurity>,
 ) -> Result<Json<NodeSecurityItem>, (StatusCode, Json<Value>)> {
@@ -573,10 +622,11 @@ async fn update_node_security(
     .await
     .map_err(database_error)?
     .ok_or_else(|| response_error(unavailable(StatusCode::NOT_FOUND, "节点不存在")))?;
-    sqlx::query("INSERT INTO audit_logs (actor_id, action, target_type, target_id, details) VALUES ($1, 'node.security.update', 'node', $2, $3)")
+    sqlx::query("INSERT INTO audit_logs (actor_id, action, target_type, target_id, details, remote_ip) VALUES ($1, 'node.security.update', 'node', $2, $3, $4::inet)")
         .bind(actor.user_id)
         .bind(node_id.to_string())
         .bind(&update.guard_policy)
+        .bind(client_ip.as_str())
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -618,8 +668,9 @@ async fn list_guard_events(
             .await
             .map_err(database_error)?;
         let rows = sqlx::query_as::<_, GuardEventRow>(
-            "SELECT e.id, e.node_id, n.name AS node_name, e.rule, host(e.peer)::text AS peer,
-                    e.tunnel_id, e.detail, e.hit_count,
+            "SELECT e.id, e.node_id, n.name AS node_name, e.rule, e.tunnel_id,
+                    e.hit_count AS intensity,
+                    GREATEST(0, EXTRACT(EPOCH FROM (e.last_seen_at - e.first_seen_at))::bigint) AS duration_secs,
                     e.first_seen_at::text AS first_seen_at, e.last_seen_at::text AS last_seen_at
              FROM guard_events e JOIN nodes n ON n.id = e.node_id
              WHERE e.node_id = $1
@@ -638,8 +689,9 @@ async fn list_guard_events(
             .await
             .map_err(database_error)?;
         let rows = sqlx::query_as::<_, GuardEventRow>(
-            "SELECT e.id, e.node_id, n.name AS node_name, e.rule, host(e.peer)::text AS peer,
-                    e.tunnel_id, e.detail, e.hit_count,
+            "SELECT e.id, e.node_id, n.name AS node_name, e.rule, e.tunnel_id,
+                    e.hit_count AS intensity,
+                    GREATEST(0, EXTRACT(EPOCH FROM (e.last_seen_at - e.first_seen_at))::bigint) AS duration_secs,
                     e.first_seen_at::text AS first_seen_at, e.last_seen_at::text AS last_seen_at
              FROM guard_events e JOIN nodes n ON n.id = e.node_id
              ORDER BY e.last_seen_at DESC LIMIT $1 OFFSET $2",

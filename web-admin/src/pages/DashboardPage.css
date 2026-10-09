@@ -34,10 +34,12 @@
 
 .dash-card,
 .dash-panel {
-  border: 1px solid var(--sidebar-border);
+  border: 1px solid var(--glass-border);
   border-radius: var(--admin-border-radius, 8px);
-  background: var(--color-white);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+  background: var(--glass-panel);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: var(--glass-shadow);
 }
 
 .dash-card {
@@ -301,9 +303,25 @@
 }
 
 .dash-event__meta {
-  overflow: hidden;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
   color: var(--color-gray-600);
   font-size: 12px;
+}
+
+.dash-event__tag {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  padding: 2px 8px;
+  overflow: hidden;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 999px;
+  background: var(--glass-panel, hsl(var(--card) / 0.55));
+  color: var(--color-gray-700);
   text-overflow: ellipsis;
   white-space: nowrap;
 }

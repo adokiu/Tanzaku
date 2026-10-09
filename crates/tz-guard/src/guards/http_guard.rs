@@ -3,7 +3,10 @@ use crate::{
     types::{AuthFailCtx, ConnCtx, HttpCtx, PktCtx, Reason, Verdict},
 };
 use serde_json::Value;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 
 inventory::submit! {
     GuardFactory {
@@ -14,20 +17,30 @@ inventory::submit! {
 
 fn build(config: &Value) -> Option<Arc<dyn GuardModule>> {
     Some(Arc::new(HttpGuard {
-        max_header_bytes: config
-            .get("max_header_bytes")
-            .and_then(Value::as_u64)
-            .unwrap_or(16_384) as usize,
-        max_headers: config
-            .get("max_headers")
-            .and_then(Value::as_u64)
-            .unwrap_or(100) as usize,
+        max_header_bytes: AtomicUsize::new(header_bytes_limit(config)),
+        max_headers: AtomicUsize::new(header_count_limit(config)),
     }))
 }
 
+fn header_bytes_limit(config: &Value) -> usize {
+    config
+        .get("max_header_bytes")
+        .and_then(Value::as_u64)
+        .unwrap_or(16_384)
+        .clamp(1, u64::from(u32::MAX)) as usize
+}
+
+fn header_count_limit(config: &Value) -> usize {
+    config
+        .get("max_headers")
+        .and_then(Value::as_u64)
+        .unwrap_or(100)
+        .clamp(1, u64::from(u32::MAX)) as usize
+}
+
 struct HttpGuard {
-    max_header_bytes: usize,
-    max_headers: usize,
+    max_header_bytes: AtomicUsize,
+    max_headers: AtomicUsize,
 }
 
 impl GuardModule for HttpGuard {
@@ -44,10 +57,20 @@ impl GuardModule for HttpGuard {
     }
 
     fn on_http_request(&self, ctx: &HttpCtx) -> Verdict {
-        if ctx.header_bytes > self.max_header_bytes || ctx.header_count > self.max_headers {
+        if ctx.header_bytes > self.max_header_bytes.load(Ordering::Relaxed)
+            || ctx.header_count > self.max_headers.load(Ordering::Relaxed)
+        {
             return Verdict::Deny(Reason::HttpPolicy);
         }
         Verdict::Continue
+    }
+
+    fn reconfigure(&self, config: &Value) -> bool {
+        self.max_header_bytes
+            .store(header_bytes_limit(config), Ordering::Relaxed);
+        self.max_headers
+            .store(header_count_limit(config), Ordering::Relaxed);
+        true
     }
 
     fn on_auth_failure(&self, ctx: &AuthFailCtx) -> Verdict {

@@ -1,5 +1,6 @@
 use super::{database_error, response_error, write_audit};
 use crate::{
+    payment::billing,
     setup::{AppState, UserRole, unavailable},
     store,
 };
@@ -546,11 +547,19 @@ async fn patch_subscription_overrides(
             .map_err(database_error)?;
     }
     if let Some(used) = request.traffic_used_bytes {
+        let raw: Option<serde_json::Value> = sqlx::query_scalar(
+            "SELECT value FROM system_settings WHERE key = 'traffic_reset_mode'",
+        )
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        let system_mode = crate::system_settings::parse_traffic_reset_mode(raw);
         let period_start = crate::subscription_period::subscription_period_start(
             &sub.traffic_period,
             sub.starts_at,
             sub.period_anchor,
             Utc::now(),
+            &system_mode,
         );
         let (bytes_in, bytes_out) =
             crate::quota::CountMode::parse(&sub.traffic_count_mode).split_used(used);
@@ -680,14 +689,222 @@ pub(crate) async fn replace_active_subscription_for_user(
             "支付金额不能为负数",
         )));
     }
-    let plan = sqlx::query_as::<_, PlanSnapshot>(
+    if expires_at_override.is_some_and(|at| at <= starts_at) {
+        return Err(response_error(unavailable(
+            StatusCode::BAD_REQUEST,
+            "到期时间必须晚于开始时间",
+        )));
+    }
+    let plan = load_plan_snapshot(transaction, plan_id).await?;
+    let group_ids = load_plan_groups(transaction, plan_id).await?;
+    let existing_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM user_subscriptions WHERE user_id = $1 AND status = 'active' FOR UPDATE",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let upgrading = existing_id.is_some();
+    let current_expires: Option<DateTime<Utc>> = if let Some(subscription_id) = existing_id {
+        sqlx::query_scalar("SELECT expires_at FROM user_subscriptions WHERE id = $1")
+            .bind(subscription_id)
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(database_error)?
+    } else {
+        None
+    };
+    let expires_at = expires_at_override.or(current_expires);
+    let subscription_id = upsert_subscription(
+        transaction,
+        actor_id,
+        user_id,
+        plan_id,
+        &plan,
+        &group_ids,
+        existing_id,
+        starts_at,
+        expires_at,
+    )
+    .await?;
+    if upgrading {
+        sqlx::query(
+            "UPDATE orders SET status = 'credited' WHERE id = (SELECT id FROM orders WHERE user_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 1)",
+        )
+        .bind(user_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+    }
+    let order_id = Uuid::new_v4();
+    let order_no = crate::payment::billing::new_order_no(Utc::now());
+    sqlx::query(
+        "INSERT INTO orders (id, order_no, user_id, plan_id, plan_name, kind, period, amount_cents, status, subscription_id, paid_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'completed',$9, now())",
+    )
+    .bind(order_id)
+    .bind(&order_no)
+    .bind(user_id)
+    .bind(plan_id)
+    .bind(&plan.name)
+    .bind("gift")
+    .bind(&plan.traffic_period)
+    .bind(amount_cents)
+    .bind(subscription_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    write_audit(transaction, actor_id, "order.create", "order", order_id).await?;
+    Ok(order_id)
+}
+
+pub(crate) async fn fulfill_paid_order(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    actor_id: Uuid,
+    user_id: Uuid,
+    plan_id: Uuid,
+    period: &str,
+    starts_at: DateTime<Utc>,
+) -> Result<Uuid, (StatusCode, Json<serde_json::Value>)> {
+    if billing::is_addon(period) {
+        return apply_addon(transaction, actor_id, user_id, plan_id, period).await;
+    }
+    apply_time_plan(transaction, actor_id, user_id, plan_id, period, starts_at, None).await
+}
+
+async fn apply_time_plan(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    actor_id: Uuid,
+    user_id: Uuid,
+    plan_id: Uuid,
+    period: &str,
+    starts_at: DateTime<Utc>,
+    expires_at_override: Option<DateTime<Utc>>,
+) -> Result<Uuid, (StatusCode, Json<serde_json::Value>)> {
+    let plan = load_plan_snapshot(transaction, plan_id).await?;
+    let group_ids = load_plan_groups(transaction, plan_id).await?;
+    let existing_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM user_subscriptions WHERE user_id = $1 AND status = 'active' FOR UPDATE",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let current_expires: Option<DateTime<Utc>> = if let Some(subscription_id) = existing_id {
+        sqlx::query_scalar("SELECT expires_at FROM user_subscriptions WHERE id = $1")
+            .bind(subscription_id)
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(database_error)?
+    } else {
+        None
+    };
+    let expires_at = expires_at_override.or_else(|| {
+        billing::extend_expiry(current_expires.unwrap_or(starts_at), starts_at, period)
+    });
+    upsert_subscription(
+        transaction,
+        actor_id,
+        user_id,
+        plan_id,
+        &plan,
+        &group_ids,
+        existing_id,
+        starts_at,
+        expires_at,
+    )
+    .await
+}
+
+async fn apply_addon(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    actor_id: Uuid,
+    user_id: Uuid,
+    plan_id: Uuid,
+    period: &str,
+) -> Result<Uuid, (StatusCode, Json<serde_json::Value>)> {
+    let plan = load_plan_snapshot(transaction, plan_id).await?;
+    let subscription_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM user_subscriptions WHERE user_id = $1 AND status = 'active' FOR UPDATE",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(|| {
+        response_error(unavailable(
+            StatusCode::BAD_REQUEST,
+            "请先购买订阅后再购买流量包或重置包",
+        ))
+    })?;
+    match period {
+        "traffic_pack" => {
+            let Some(pack_bytes) = plan.traffic_quota_bytes else {
+                return Err(response_error(unavailable(
+                    StatusCode::BAD_REQUEST,
+                    "该套餐为不限流量，无法购买流量包",
+                )));
+            };
+            sqlx::query(
+                "UPDATE user_subscriptions SET traffic_quota_bytes = COALESCE(traffic_quota_bytes, 0) + $2, exhausted_period_start = NULL, updated_at = now() WHERE id = $1",
+            )
+            .bind(subscription_id)
+            .bind(pack_bytes)
+            .execute(&mut **transaction)
+            .await
+            .map_err(database_error)?;
+        }
+        "reset_pack" => {
+            sqlx::query(
+                "UPDATE user_subscriptions SET exhausted_period_start = NULL, updated_at = now() WHERE id = $1",
+            )
+            .bind(subscription_id)
+            .execute(&mut **transaction)
+            .await
+            .map_err(database_error)?;
+            sqlx::query(
+                "UPDATE traffic_usage SET bytes_in = 0, bytes_out = 0, updated_at = now() WHERE subscription_id = $1",
+            )
+            .bind(subscription_id)
+            .execute(&mut **transaction)
+            .await
+            .map_err(database_error)?;
+        }
+        _ => {
+            return Err(response_error(unavailable(
+                StatusCode::BAD_REQUEST,
+                "订单周期无效",
+            )));
+        }
+    }
+    write_audit(
+        transaction,
+        actor_id,
+        "subscription.update",
+        "subscription",
+        subscription_id,
+    )
+    .await?;
+    Ok(subscription_id)
+}
+
+async fn load_plan_snapshot(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    plan_id: Uuid,
+) -> Result<PlanSnapshot, (StatusCode, Json<serde_json::Value>)> {
+    sqlx::query_as::<_, PlanSnapshot>(
         "SELECT name, speed_limit_mbps, max_conns_per_tunnel, max_new_conns_per_sec, max_tunnels, allow_custom_port, traffic_quota_bytes, traffic_period, traffic_count_mode, allowed_protocols FROM plans WHERE id = $1 AND enabled = TRUE",
     )
     .bind(plan_id)
     .fetch_optional(&mut **transaction)
     .await
     .map_err(database_error)?
-    .ok_or_else(|| response_error(unavailable(StatusCode::NOT_FOUND, "套餐不存在或已停用")))?;
+    .ok_or_else(|| response_error(unavailable(StatusCode::NOT_FOUND, "套餐不存在或已停用")))
+}
+
+async fn load_plan_groups(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    plan_id: Uuid,
+) -> Result<Vec<Uuid>, (StatusCode, Json<serde_json::Value>)> {
     let group_ids = sqlx::query_scalar::<_, Uuid>(
         "SELECT node_group_id FROM plan_node_groups WHERE plan_id = $1 ORDER BY node_group_id",
     )
@@ -701,25 +918,25 @@ pub(crate) async fn replace_active_subscription_for_user(
             "套餐必须至少允许一个节点组",
         )));
     }
-    if expires_at_override.is_some_and(|at| at <= starts_at) {
-        return Err(response_error(unavailable(
-            StatusCode::BAD_REQUEST,
-            "到期时间必须晚于开始时间",
-        )));
-    }
+    Ok(group_ids)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn upsert_subscription(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    actor_id: Uuid,
+    user_id: Uuid,
+    plan_id: Uuid,
+    plan: &PlanSnapshot,
+    group_ids: &[Uuid],
+    existing_id: Option<Uuid>,
+    starts_at: DateTime<Utc>,
+    expires_at: Option<DateTime<Utc>>,
+) -> Result<Uuid, (StatusCode, Json<serde_json::Value>)> {
     let period_anchor = starts_at.day() as i16;
-
-    let existing_id: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM user_subscriptions WHERE user_id = $1 AND status = 'active' FOR UPDATE",
-    )
-    .bind(user_id)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-
     let subscription_id = if let Some(subscription_id) = existing_id {
         sqlx::query(
-            "UPDATE user_subscriptions SET plan_id = $2, speed_limit_mbps = $3, max_conns_per_tunnel = $4, max_new_conns_per_sec = $5, max_tunnels = $6, allow_custom_port = $7, traffic_quota_bytes = $8, traffic_period = $9, duration_days = NULL, allowed_protocols = $10, traffic_count_mode = $11, starts_at = $12, expires_at = COALESCE($13, expires_at), period_anchor = $14, exhausted_period_start = NULL, updated_at = now() WHERE id = $1",
+            "UPDATE user_subscriptions SET plan_id = $2, speed_limit_mbps = $3, max_conns_per_tunnel = $4, max_new_conns_per_sec = $5, max_tunnels = $6, allow_custom_port = $7, traffic_quota_bytes = $8, traffic_period = $9, duration_days = NULL, allowed_protocols = $10, traffic_count_mode = $11, starts_at = $12, expires_at = $13, period_anchor = $14, exhausted_period_start = NULL, updated_at = now() WHERE id = $1",
         )
         .bind(subscription_id)
         .bind(plan_id)
@@ -733,7 +950,7 @@ pub(crate) async fn replace_active_subscription_for_user(
         .bind(&plan.allowed_protocols)
         .bind(&plan.traffic_count_mode)
         .bind(starts_at)
-        .bind(expires_at_override)
+        .bind(expires_at)
         .bind(period_anchor)
         .execute(&mut **transaction)
         .await
@@ -771,7 +988,7 @@ pub(crate) async fn replace_active_subscription_for_user(
         .bind(&plan.allowed_protocols)
         .bind(&plan.traffic_count_mode)
         .bind(starts_at)
-        .bind(expires_at_override)
+        .bind(expires_at)
         .bind(period_anchor)
         .execute(&mut **transaction)
         .await
@@ -786,7 +1003,6 @@ pub(crate) async fn replace_active_subscription_for_user(
         .await?;
         subscription_id
     };
-
     for group_id in group_ids {
         sqlx::query(
             "INSERT INTO subscription_node_groups (subscription_id, node_group_id) VALUES ($1, $2)",
@@ -797,33 +1013,7 @@ pub(crate) async fn replace_active_subscription_for_user(
         .await
         .map_err(database_error)?;
     }
-    let upgrading = existing_id.is_some();
-    if upgrading {
-        sqlx::query(
-            "UPDATE orders SET status = 'credited' WHERE id = (SELECT id FROM orders WHERE user_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 1)",
-        )
-        .bind(user_id)
-        .execute(&mut **transaction)
-        .await
-        .map_err(database_error)?;
-    }
-    let order_id = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO orders (id, user_id, plan_id, plan_name, kind, period, amount_cents, status, subscription_id) VALUES ($1,$2,$3,$4,$5,$6,$7,'completed',$8)",
-    )
-    .bind(order_id)
-    .bind(user_id)
-    .bind(plan_id)
-    .bind(&plan.name)
-    .bind(if upgrading { "upgrade" } else { "new" })
-    .bind(&plan.traffic_period)
-    .bind(amount_cents)
-    .bind(subscription_id)
-    .execute(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    write_audit(transaction, actor_id, "order.create", "order", order_id).await?;
-    Ok(order_id)
+    Ok(subscription_id)
 }
 
 async fn patch_active_subscription_expires(

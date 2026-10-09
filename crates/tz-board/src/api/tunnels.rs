@@ -14,6 +14,7 @@ use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{FromRow, PgPool};
+use chrono::{DateTime, Utc};
 use std::{
     collections::{HashMap, HashSet},
     net::IpAddr,
@@ -43,12 +44,13 @@ pub fn admin_router() -> Router<Arc<AppState>> {
 pub fn user_router() -> Router<Arc<AppState>> {
     Router::new()
         .route(
-            "/api/v1/tunnels",
-            get(list_user_tunnels).post(create_tunnel),
-        )
+        "/api/v1/tunnels",
+        get(list_user_tunnels).post(create_tunnel),
+    )
         .route(
             "/api/v1/tunnels/{tunnel_id}",
             get(get_user_tunnel)
+                .put(user_update_tunnel)
                 .delete(user_delete_tunnel),
         )
         .route(
@@ -72,6 +74,7 @@ struct TunnelRow {
     client_name: Option<String>,
     node_id: Uuid,
     node_name: Option<String>,
+    node_public_host: Option<String>,
     name: String,
     carrier: String,
     protocol: String,
@@ -131,9 +134,15 @@ struct PaginatedAdminTunnels {
 #[derive(Debug, Deserialize)]
 struct AdminListTunnelsQuery {
     node_id: Uuid,
-    #[serde(default = "default_list_page")]
+    #[serde(
+        default = "default_list_page",
+        deserialize_with = "crate::page::deserialize_query_u32"
+    )]
     page: u32,
-    #[serde(default = "default_list_page_size")]
+    #[serde(
+        default = "default_list_page_size",
+        deserialize_with = "crate::page::deserialize_query_u32"
+    )]
     page_size: u32,
 }
 
@@ -149,7 +158,7 @@ const ADMIN_TUNNEL_PAGE_SIZE_MAX: u32 = 100;
 /// 限制 OFFSET 深度，避免在超大数据集上扫描过多索引项。
 const ADMIN_TUNNEL_MAX_OFFSET: i64 = 2_000_000;
 
-const ADMIN_TUNNEL_LIST_SQL: &str = "SELECT t.id, t.user_id, u.email AS user_email, t.client_id, c.name AS client_name, t.node_id, n.name AS node_name, t.name, t.carrier, t.protocol, t.remote_port, t.target_host, t.target_port, t.target_url, t.status, t.enabled, t.speed_limit_mbps, t.max_conns, t.max_new_conns_per_sec, t.last_error FROM tunnels t JOIN users u ON u.id = t.user_id JOIN clients c ON c.id = t.client_id JOIN nodes n ON n.id = t.node_id WHERE t.node_id = $1 AND t.status <> 'deleted' ORDER BY t.created_at DESC, t.id DESC";
+const ADMIN_TUNNEL_LIST_SQL: &str = "SELECT t.id, t.user_id, u.email AS user_email, t.client_id, c.name AS client_name, t.node_id, n.name AS node_name, n.public_host AS node_public_host, t.name, t.carrier, t.protocol, t.remote_port, t.target_host, t.target_port, t.target_url, t.status, t.enabled, t.speed_limit_mbps, t.max_conns, t.max_new_conns_per_sec, t.last_error FROM tunnels t JOIN users u ON u.id = t.user_id JOIN clients c ON c.id = t.client_id JOIN nodes n ON n.id = t.node_id WHERE t.node_id = $1 AND t.status <> 'deleted' ORDER BY t.created_at DESC, t.id DESC";
 
 #[derive(Debug, Deserialize)]
 struct SetTunnelEnabled {
@@ -301,9 +310,9 @@ async fn list_admin_tunnels(
         .bind(query.node_id)
         .bind(i64::from(page_size))
         .bind(offset)
-        .fetch_all(&pg)
-        .await
-        .map_err(database_error)?;
+    .fetch_all(&pg)
+    .await
+    .map_err(database_error)?;
     let mut items = attach_tunnel_traffic_metrics(&pg, rows).await;
     let ids: Vec<Uuid> = items.iter().map(|item| item.tunnel.id).collect();
     if !ids.is_empty() {
@@ -394,7 +403,7 @@ async fn list_user_tunnels(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(page): Query<crate::page::PageQuery>,
-) -> Result<Json<crate::page::Page<TunnelRow>>, (StatusCode, Json<Value>)> {
+) -> Result<Json<PaginatedAdminTunnels>, (StatusCode, Json<Value>)> {
     let (pg, user) = state
         .database_for(&headers, UserRole::User)
         .await
@@ -408,7 +417,7 @@ async fn list_user_tunnels(
     .await
     .map_err(database_error)?;
     let rows = sqlx::query_as::<_, TunnelRow>(
-        "SELECT t.id, t.user_id, NULL::text AS user_email, t.client_id, c.name AS client_name, t.node_id, n.name AS node_name, t.name, t.carrier, t.protocol, t.remote_port, t.target_host, t.target_port, t.target_url, t.status, t.enabled, t.speed_limit_mbps, t.max_conns, t.max_new_conns_per_sec, t.last_error FROM tunnels t JOIN clients c ON c.id = t.client_id JOIN nodes n ON n.id = t.node_id WHERE t.user_id = $1 AND t.status <> 'deleted' ORDER BY t.created_at DESC LIMIT $2 OFFSET $3",
+        "SELECT t.id, t.user_id, NULL::text AS user_email, t.client_id, c.name AS client_name, t.node_id, n.name AS node_name, n.public_host AS node_public_host, t.name, t.carrier, t.protocol, t.remote_port, t.target_host, t.target_port, t.target_url, t.status, t.enabled, t.speed_limit_mbps, t.max_conns, t.max_new_conns_per_sec, t.last_error FROM tunnels t JOIN clients c ON c.id = t.client_id JOIN nodes n ON n.id = t.node_id WHERE t.user_id = $1 AND t.status <> 'deleted' ORDER BY t.created_at DESC LIMIT $2 OFFSET $3",
     )
     .bind(user.user_id)
     .bind(page_size)
@@ -416,7 +425,35 @@ async fn list_user_tunnels(
     .fetch_all(&pg)
     .await
     .map_err(database_error)?;
-    Ok(Json(crate::page::Page::new(rows, total, page, page_size)))
+    let mut items = attach_tunnel_traffic_metrics(&pg, rows).await;
+    let ids: Vec<Uuid> = items.iter().map(|item| item.tunnel.id).collect();
+    if !ids.is_empty() {
+        let extras = sqlx::query_as::<_, TunnelHttpsFields>(
+            "SELECT t.id, t.https_enabled, t.cert_id, COALESCE((SELECT array_agg(td.domain ORDER BY td.domain) FROM tunnel_domains td WHERE td.tunnel_id = t.id AND td.status IN ('approved', 'pending_review')), ARRAY[]::text[]) AS domains, t.http_access, t.host_rewrite, t.backend_tls_insecure FROM tunnels t WHERE t.id = ANY($1)",
+        )
+        .bind(&ids)
+        .fetch_all(&pg)
+        .await
+        .map_err(database_error)?;
+        let extras: HashMap<Uuid, TunnelHttpsFields> =
+            extras.into_iter().map(|row| (row.id, row)).collect();
+        for item in &mut items {
+            if let Some(extra) = extras.get(&item.tunnel.id) {
+                item.https_enabled = extra.https_enabled;
+                item.cert_id = extra.cert_id;
+                item.domains.clone_from(&extra.domains);
+                item.http_access.clone_from(&extra.http_access);
+                item.host_rewrite.clone_from(&extra.host_rewrite);
+                item.backend_tls_insecure = extra.backend_tls_insecure;
+            }
+        }
+    }
+    Ok(Json(PaginatedAdminTunnels {
+        items,
+        total,
+        page: u32::try_from(page).unwrap_or(1),
+        page_size: u32::try_from(page_size).unwrap_or(20),
+    }))
 }
 
 async fn get_user_tunnel(
@@ -596,8 +633,8 @@ async fn transition_tunnel_status(
     runtime: TunnelRuntimeSync,
 ) -> Result<Json<TunnelDetailRow>, (StatusCode, Json<Value>)> {
     let allowed: HashSet<&str> = allowed_from.iter().copied().collect();
-    let current = sqlx::query_as::<_, (String, Uuid, Uuid)>(
-        "SELECT status, node_id, client_id FROM tunnels WHERE id = $1 AND user_id = $2 AND status <> 'deleted'",
+    let current = sqlx::query_as::<_, (String, Uuid, Uuid, Option<DateTime<Utc>>)>(
+        "SELECT status, node_id, client_id, guard_cooldown_until FROM tunnels WHERE id = $1 AND user_id = $2 AND status <> 'deleted'",
     )
     .bind(tunnel_id)
     .bind(user_id)
@@ -612,10 +649,11 @@ async fn transition_tunnel_status(
         )));
     }
     if enabled {
+        ensure_cooldown_passed(current.3)?;
         ensure_quota_available(pg, user_id).await?;
     }
     let row = sqlx::query_as::<_, TunnelDetailRow>(
-        "UPDATE tunnels SET status = $3, enabled = $4, last_error = CASE WHEN $3 = 'active' THEN NULL ELSE last_error END, guard_pause_until = CASE WHEN $4 THEN NULL ELSE guard_pause_until END, revision = revision + 1, updated_at = now() WHERE id = $1 AND user_id = $2 RETURNING id, user_id, client_id, NULL::text AS client_name, node_id, NULL::text AS node_name, name, carrier, protocol, remote_port, target_host, target_port, target_url, http_access, https_enabled, status, enabled, speed_limit_mbps, max_conns, max_new_conns_per_sec, last_error",
+        "UPDATE tunnels SET status = $3, enabled = $4, last_error = CASE WHEN $3 = 'active' THEN NULL ELSE last_error END, guard_pause_until = CASE WHEN $4 THEN NULL ELSE guard_pause_until END, guard_cooldown_until = CASE WHEN $4 THEN NULL ELSE guard_cooldown_until END, auto_recover_attempts = 0, auto_recover_at = NULL, auto_recover_closing = FALSE, last_active_secs = NULL, revision = revision + 1, updated_at = now() WHERE id = $1 AND user_id = $2 RETURNING id, user_id, client_id, NULL::text AS client_name, node_id, NULL::text AS node_name, name, carrier, protocol, remote_port, target_host, target_port, target_url, http_access, https_enabled, status, enabled, speed_limit_mbps, max_conns, max_new_conns_per_sec, last_error",
     )
     .bind(tunnel_id)
     .bind(user_id)
@@ -647,6 +685,22 @@ async fn ensure_quota_available(pg: &PgPool, user_id: Uuid) -> Result<(), (Statu
             StatusCode::FORBIDDEN,
             "当前周期流量已用尽，额度恢复前无法启动隧道",
         )));
+    }
+    Ok(())
+}
+
+/// 攻击自动暂停后的冷却检查：冷却期内禁止手动开启。
+fn ensure_cooldown_passed(
+    cooldown_until: Option<DateTime<Utc>>,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    if let Some(until) = cooldown_until {
+        if until > Utc::now() {
+            let remaining = (until - Utc::now()).num_minutes().max(1);
+            return Err(response_error(unavailable(
+                StatusCode::LOCKED,
+                format!("隧道因攻击被自动暂停，冷却期剩余约 {remaining} 分钟，期间无法开启"),
+            )));
+        }
     }
     Ok(())
 }
@@ -770,8 +824,8 @@ async fn transition_tunnel_status_admin(
     runtime: TunnelRuntimeSync,
 ) -> Result<(), (StatusCode, Json<Value>)> {
     let allowed: HashSet<&str> = allowed_from.iter().copied().collect();
-    let current = sqlx::query_as::<_, (String, Uuid, Uuid, Uuid)>(
-        "SELECT status, node_id, client_id, user_id FROM tunnels WHERE id = $1 AND status <> 'deleted'",
+    let current = sqlx::query_as::<_, (String, Uuid, Uuid, Uuid, Option<DateTime<Utc>>)>(
+        "SELECT status, node_id, client_id, user_id, guard_cooldown_until FROM tunnels WHERE id = $1 AND status <> 'deleted'",
     )
     .bind(tunnel_id)
     .fetch_optional(pg)
@@ -785,10 +839,11 @@ async fn transition_tunnel_status_admin(
         )));
     }
     if enabled {
+        ensure_cooldown_passed(current.4)?;
         ensure_quota_available(pg, current.3).await?;
     }
     sqlx::query(
-        "UPDATE tunnels SET status = $2, enabled = $3, last_error = CASE WHEN $2 = 'active' THEN NULL ELSE last_error END, guard_pause_until = CASE WHEN $3 THEN NULL ELSE guard_pause_until END, revision = revision + 1, updated_at = now() WHERE id = $1",
+        "UPDATE tunnels SET status = $2, enabled = $3, last_error = CASE WHEN $2 = 'active' THEN NULL ELSE last_error END, guard_pause_until = CASE WHEN $3 THEN NULL ELSE guard_pause_until END, guard_cooldown_until = CASE WHEN $3 THEN NULL ELSE guard_cooldown_until END, auto_recover_attempts = 0, auto_recover_at = NULL, auto_recover_closing = FALSE, last_active_secs = NULL, revision = revision + 1, updated_at = now() WHERE id = $1",
     )
     .bind(tunnel_id)
     .bind(next_status)
@@ -841,6 +896,38 @@ async fn admin_update_tunnel(
         .database_for(&headers, UserRole::Admin)
         .await
         .map_err(response_error)?;
+    update_tunnel(state, pg, actor.user_id, tunnel_id, body, None).await
+}
+
+async fn user_update_tunnel(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(tunnel_id): Path<Uuid>,
+    Json(body): Json<AdminUpdateTunnel>,
+) -> Result<StatusCode, (StatusCode, Json<Value>)> {
+    let (pg, actor) = state
+        .database_for(&headers, UserRole::User)
+        .await
+        .map_err(response_error)?;
+    update_tunnel(
+        state,
+        pg,
+        actor.user_id,
+        tunnel_id,
+        body,
+        Some(actor.user_id),
+    )
+    .await
+}
+
+async fn update_tunnel(
+    state: Arc<AppState>,
+    pg: PgPool,
+    actor_id: Uuid,
+    tunnel_id: Uuid,
+    body: AdminUpdateTunnel,
+    restrict_owner: Option<Uuid>,
+) -> Result<StatusCode, (StatusCode, Json<Value>)> {
     let current = sqlx::query_as::<_, EditableTunnel>(
         "SELECT protocol, carrier, user_id, client_id, node_id, name, remote_port, port_custom, target_host, target_port, target_url, http_access, host_rewrite, backend_tls_insecure, https_enabled, cert_id, speed_limit_mbps FROM tunnels WHERE id = $1 AND status <> 'deleted'",
     )
@@ -849,6 +936,14 @@ async fn admin_update_tunnel(
     .await
     .map_err(database_error)?
     .ok_or_else(|| response_error(unavailable(StatusCode::NOT_FOUND, "隧道不存在或已删除")))?;
+    if let Some(owner) = restrict_owner {
+        if current.user_id != owner {
+            return Err(response_error(unavailable(
+                StatusCode::NOT_FOUND,
+                "隧道不存在或已删除",
+            )));
+        }
+    }
 
     let name = match body.name.as_deref() {
         Some(value) => {
@@ -873,6 +968,14 @@ async fn admin_update_tunnel(
     .await
     .map_err(database_error)?
     .ok_or_else(|| response_error(unavailable(StatusCode::NOT_FOUND, "Client 不存在或已停用")))?;
+    if let Some(owner) = restrict_owner {
+        if user_id != owner {
+            return Err(response_error(unavailable(
+                StatusCode::FORBIDDEN,
+                "只能使用自己的 Client",
+            )));
+        }
+    }
     let client_capabilities: Value = sqlx::query_scalar("SELECT capabilities FROM clients WHERE id = $1")
         .bind(client_id)
         .fetch_one(&pg)
@@ -884,14 +987,46 @@ async fn admin_update_tunnel(
             "所选 Client 尚未上报该 Carrier 能力",
         )));
     }
-    let node = sqlx::query_as::<_, TunnelNode>(
-        "SELECT region, capabilities, protocols, carrier_ports, tcp_port_ranges, udp_port_ranges, port_exclude, http_shared_port, https_shared_port, guard_policy FROM nodes WHERE id = $1 AND enabled = TRUE",
-    )
-    .bind(node_id)
-    .fetch_optional(&pg)
-    .await
-    .map_err(database_error)?
-    .ok_or_else(|| response_error(unavailable(StatusCode::NOT_FOUND, "节点不存在或已停用")))?;
+    let subscription = if restrict_owner.is_some() {
+        const ACTIVE_SUBSCRIPTION_SQL: &str = "SELECT id, speed_limit_mbps, max_conns_per_tunnel, max_new_conns_per_sec, max_tunnels, allow_custom_port, allowed_protocols FROM user_subscriptions WHERE user_id = $1 AND status = 'active' AND starts_at <= now() AND (expires_at IS NULL OR expires_at > now()) AND exhausted_period_start IS NULL ORDER BY starts_at DESC LIMIT 1";
+        Some(
+            sqlx::query_as::<_, SubscriptionLimits>(ACTIVE_SUBSCRIPTION_SQL)
+                .bind(user_id)
+                .fetch_optional(&pg)
+                .await
+                .map_err(database_error)?
+                .ok_or_else(|| {
+                    response_error(unavailable(StatusCode::PAYMENT_REQUIRED, "请先购买或续费订阅"))
+                })?,
+        )
+    } else {
+        None
+    };
+    let node = if let Some(sub) = subscription.as_ref() {
+        sqlx::query_as::<_, TunnelNode>(
+            "SELECT region, capabilities, protocols, carrier_ports, tcp_port_ranges, udp_port_ranges, port_exclude, http_shared_port, https_shared_port, guard_policy FROM nodes n WHERE n.id = $1 AND n.enabled = TRUE AND EXISTS (SELECT 1 FROM node_group_members ngm JOIN subscription_node_groups sng ON sng.node_group_id = ngm.node_group_id WHERE ngm.node_id = n.id AND sng.subscription_id = $2)",
+        )
+        .bind(node_id)
+        .bind(sub.id)
+        .fetch_optional(&pg)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(|| {
+            response_error(unavailable(
+                StatusCode::FORBIDDEN,
+                "所选节点不在当前订阅可用范围内",
+            ))
+        })?
+    } else {
+        sqlx::query_as::<_, TunnelNode>(
+            "SELECT region, capabilities, protocols, carrier_ports, tcp_port_ranges, udp_port_ranges, port_exclude, http_shared_port, https_shared_port, guard_policy FROM nodes WHERE id = $1 AND enabled = TRUE",
+        )
+        .bind(node_id)
+        .fetch_optional(&pg)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(|| response_error(unavailable(StatusCode::NOT_FOUND, "节点不存在或已停用")))?
+    };
     if !node.protocols.iter().any(|protocol| protocol == &current.protocol)
         || !tz_ingress::registered_kinds().contains(&current.protocol.as_str())
     {
@@ -907,6 +1042,26 @@ async fn admin_update_tunnel(
             StatusCode::BAD_REQUEST,
             "所选节点不支持该 Carrier",
         )));
+    }
+    {
+        let effective =
+            crate::guard_policy::effective_node_guard_policy(&pg, &node.guard_policy).await;
+        let client_region: String =
+            sqlx::query_scalar("SELECT COALESCE(region, '') FROM clients WHERE id = $1")
+                .bind(client_id)
+                .fetch_one(&pg)
+                .await
+                .map_err(database_error)?;
+        if crate::guard_policy::cn_residency_blocks_client(
+            &effective,
+            &node.region,
+            &client_region,
+        ) {
+            return Err(response_error(unavailable(
+                StatusCode::FORBIDDEN,
+                "中国大陆节点仅允许中国大陆地区的 Client 连接，以降低跨境数据传输风险",
+            )));
+        }
     }
 
     let is_http = current.protocol == "http";
@@ -1032,7 +1187,10 @@ async fn admin_update_tunnel(
             &current.protocol,
             false,
             requested_port,
-            true,
+            subscription
+                .as_ref()
+                .map(|sub| sub.allow_custom_port)
+                .unwrap_or(true),
         )
         .await?
     };
@@ -1066,20 +1224,23 @@ async fn admin_update_tunnel(
         )));
     }
     let https_enabled = is_http && body.https_enabled.unwrap_or(current.https_enabled);
-    if https_enabled && domains.is_empty() {
+    // 共享入口靠 SNI 选隧道，必须有域名；独立端口可不填域名，按节点 IP 访问（回退自签证书）。
+    if https_enabled && shared_http && domains.is_empty() {
         rollback_port_reservation(reservation.take(), node_id, &state, &pg).await;
         return Err(response_error(unavailable(
             StatusCode::BAD_REQUEST,
-            "启用 HTTPS 的 HTTP 隧道必须绑定域名",
+            "共享入口启用 HTTPS 必须绑定域名",
         )));
     }
-    let cert_id = if https_enabled {
-        let cert_id = body.cert_id.or(current.cert_id).ok_or_else(|| {
-            response_error(unavailable(
+    let cert_required = shared_http || !domains.is_empty();
+    let cert_id = if https_enabled && (cert_required || body.cert_id.is_some()) {
+        let Some(cert_id) = body.cert_id.or(current.cert_id) else {
+            rollback_port_reservation(reservation.take(), node_id, &state, &pg).await;
+            return Err(response_error(unavailable(
                 StatusCode::BAD_REQUEST,
                 "启用 HTTPS 必须选择证书",
-            ))
-        })?;
+            )));
+        };
         let usable: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM certificates WHERE id = $1 AND (owner_user_id = $2 OR owner_user_id IS NULL) AND not_after > now())",
         )
@@ -1125,7 +1286,18 @@ async fn admin_update_tunnel(
                 "限速必须大于 0",
             )));
         }
-        Some(limit) => limit,
+        Some(limit) => {
+            if let Some(sub) = subscription.as_ref() {
+                if limit > sub.speed_limit_mbps {
+                    rollback_port_reservation(reservation.take(), node_id, &state, &pg).await;
+                    return Err(response_error(unavailable(
+                        StatusCode::BAD_REQUEST,
+                        "限速不能超过当前订阅上限",
+                    )));
+                }
+            }
+            limit
+        }
         None => current.speed_limit_mbps,
     };
 
@@ -1162,7 +1334,7 @@ async fn admin_update_tunnel(
         return Err(response_error(unavailable(StatusCode::SERVICE_UNAVAILABLE, "数据库暂不可用")));
     }
     let updated = sqlx::query(
-        "UPDATE tunnels SET name = $2, user_id = $3, client_id = $4, node_id = $5, remote_port = $6, port_custom = $7, target_host = $8, target_port = $9, target_url = $10, http_access = $11, https_enabled = $12, cert_id = $13, host_rewrite = $14, backend_tls_insecure = $15, speed_limit_mbps = $16, revision = revision + 1, updated_at = now() WHERE id = $1 AND status <> 'deleted'",
+        "UPDATE tunnels SET name = $2, user_id = $3, client_id = $4, node_id = $5, remote_port = $6, port_custom = $7, target_host = $8, target_port = $9, target_url = $10, http_access = $11, https_enabled = $12, cert_id = $13, host_rewrite = $14, backend_tls_insecure = $15, speed_limit_mbps = $16, enabled = enabled OR auto_recover_closing, auto_recover_attempts = 0, auto_recover_at = NULL, auto_recover_closing = FALSE, last_active_secs = NULL, revision = revision + 1, updated_at = now() WHERE id = $1 AND status <> 'deleted'",
     )
     .bind(tunnel_id)
     .bind(&name)
@@ -1218,9 +1390,16 @@ async fn admin_update_tunnel(
             return Err(response_error(unavailable(StatusCode::SERVICE_UNAVAILABLE, "数据库暂不可用")));
         }
     }
+    if is_http {
+        if let Err(error) = ensure_domain_endpoints_free(&mut transaction, tunnel_id).await {
+            let _ = transaction.rollback().await;
+            rollback_port_reservation(reservation.take(), node_id, &state, &pg).await;
+            return Err(error);
+        }
+    }
     if let Err(error) = write_audit(
         &mut transaction,
-        actor.user_id,
+        actor_id,
         "tunnel.update",
         "tunnel",
         tunnel_id,
@@ -1319,50 +1498,119 @@ async fn replace_tunnel_domains(
                 "该域名未过白，不能在中国大陆节点创建 HTTP 隧道",
             )));
         }
-        let cooldown_owner = sqlx::query_scalar::<_, Uuid>(
-            "SELECT user_id FROM tunnel_domains WHERE domain = $1 AND status IN ('rejected', 'cooldown') AND cooldown_until > now() FOR UPDATE",
+        bind_tunnel_domain(transaction, tunnel_id, user_id, domain, "approved").await?;
+    }
+    Ok(())
+}
+
+/// 绑定一个域名到隧道。域名不全局唯一：同一用户可在不同入口重复使用；
+/// 其他用户占用中或冷却期内的域名不能绑定。入口冲突由 `ensure_domain_endpoints_free` 校验。
+async fn bind_tunnel_domain(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tunnel_id: Uuid,
+    user_id: Uuid,
+    domain: &str,
+    status: &str,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    let taken_by_other: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1 FROM tunnel_domains td
+             LEFT JOIN tunnels t ON t.id = td.tunnel_id
+             WHERE td.domain = $1 AND td.user_id <> $2
+               AND ((td.status IN ('rejected', 'cooldown') AND td.cooldown_until > now())
+                    OR (td.status IN ('approved', 'pending_review') AND t.status <> 'deleted'))
+         )",
+    )
+    .bind(domain)
+    .bind(user_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    if taken_by_other {
+        return Err(response_error(unavailable(
+            StatusCode::CONFLICT,
+            "该域名已被其他用户绑定或仍在冷却期内",
+        )));
+    }
+    sqlx::query(
+        "DELETE FROM tunnel_domains WHERE domain = $1 AND status IN ('rejected', 'cooldown') AND (cooldown_until IS NULL OR cooldown_until <= now())",
+    )
+    .bind(domain)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    // 本用户冷却中的记录直接复用（优先本隧道的），保留冷却期内的归属。
+    let reusable: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM tunnel_domains
+         WHERE domain = $1 AND user_id = $2 AND status IN ('rejected', 'cooldown') AND cooldown_until > now()
+         ORDER BY (tunnel_id = $3) DESC, created_at DESC
+         LIMIT 1
+         FOR UPDATE",
+    )
+    .bind(domain)
+    .bind(user_id)
+    .bind(tunnel_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let wrote = match reusable {
+        Some(id) => sqlx::query(
+            "UPDATE tunnel_domains SET tunnel_id = $1, status = $2, reviewed_by = NULL, reviewed_at = NULL, cooldown_until = NULL, created_at = now() WHERE id = $3",
         )
+        .bind(tunnel_id)
+        .bind(status)
+        .bind(id)
+        .execute(&mut **transaction)
+        .await,
+        None => sqlx::query(
+            "INSERT INTO tunnel_domains (id, tunnel_id, user_id, domain, status) VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(tunnel_id)
+        .bind(user_id)
         .bind(domain)
-        .fetch_optional(&mut **transaction)
-        .await
-        .map_err(database_error)?;
-        if cooldown_owner.is_some_and(|owner| owner != user_id) {
-            return Err(response_error(unavailable(
-                StatusCode::CONFLICT,
-                "该域名仍在冷却期内，只有原用户可以重新绑定",
-            )));
-        }
-        let wrote = if cooldown_owner.is_some() {
-            sqlx::query("UPDATE tunnel_domains SET tunnel_id = $1, user_id = $2, status = 'approved', reviewed_by = NULL, reviewed_at = NULL, cooldown_until = NULL, created_at = now() WHERE domain = $3")
-                .bind(tunnel_id)
-                .bind(user_id)
-                .bind(domain)
-                .execute(&mut **transaction)
-                .await
-                .map(|_| ())
-        } else {
-            match sqlx::query("DELETE FROM tunnel_domains WHERE domain = $1 AND status IN ('rejected', 'cooldown') AND cooldown_until <= now()")
-                .bind(domain)
-                .execute(&mut **transaction)
-                .await
-            {
-                Ok(_) => sqlx::query("INSERT INTO tunnel_domains (id, tunnel_id, user_id, domain, status) VALUES ($1, $2, $3, $4, 'approved')")
-                    .bind(Uuid::new_v4())
-                    .bind(tunnel_id)
-                    .bind(user_id)
-                    .bind(domain)
-                    .execute(&mut **transaction)
-                    .await
-                    .map(|_| ()),
-                Err(error) => Err(error),
-            }
-        };
-        if wrote.is_err() {
-            return Err(response_error(unavailable(
-                StatusCode::CONFLICT,
-                "域名已被占用或审核记录创建失败",
-            )));
-        }
+        .bind(status)
+        .execute(&mut **transaction)
+        .await,
+    };
+    if wrote.is_err() {
+        return Err(response_error(unavailable(
+            StatusCode::CONFLICT,
+            "域名绑定记录写入失败",
+        )));
+    }
+    Ok(())
+}
+
+/// 同一节点同一入口（共享 80/443，或同一独立端口）上不能有两条隧道绑定同一域名。
+/// 调用方需已持有该节点的 `tunnel-ports:{node_id}` 事务锁。
+async fn ensure_domain_endpoints_free(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tunnel_id: Uuid,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    let conflict: Option<String> = sqlx::query_scalar(
+        "SELECT td.domain
+         FROM tunnel_domains td
+         JOIN tunnels t ON t.id = td.tunnel_id
+         JOIN tunnel_domains td2 ON td2.domain = td.domain AND td2.tunnel_id <> td.tunnel_id
+             AND td2.status IN ('approved', 'pending_review')
+         JOIN tunnels t2 ON t2.id = td2.tunnel_id AND t2.status <> 'deleted'
+         WHERE td.tunnel_id = $1
+           AND td.status IN ('approved', 'pending_review')
+           AND t2.node_id = t.node_id
+           AND ((t.http_access = 'shared' AND t2.http_access = 'shared')
+                OR (t.http_access = 'dedicated' AND t2.http_access = 'dedicated' AND t2.remote_port = t.remote_port))
+         LIMIT 1",
+    )
+    .bind(tunnel_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    if let Some(domain) = conflict {
+        return Err(response_error(unavailable(
+            StatusCode::CONFLICT,
+            format!("域名 {domain} 在该节点的同一入口已被其他隧道使用"),
+        )));
     }
     Ok(())
 }
@@ -1547,8 +1795,8 @@ async fn create_tunnel_inner(
     let subscription = sqlx::query_as::<_, SubscriptionLimits>(ACTIVE_SUBSCRIPTION_SQL)
         .bind(owner_user_id)
         .fetch_optional(pg)
-        .await
-        .map_err(database_error)?
+    .await
+    .map_err(database_error)?
         .ok_or_else(|| {
             response_error(unavailable(
                 StatusCode::FORBIDDEN,
@@ -1748,8 +1996,8 @@ async fn create_tunnel_inner(
     let whitelist: Vec<String> = if enforce_cn_filing {
         sqlx::query_scalar("SELECT domain FROM domain_whitelist")
             .fetch_all(pg)
-            .await
-            .map_err(database_error)?
+        .await
+        .map_err(database_error)?
     } else {
         Vec::new()
     };
@@ -1786,13 +2034,21 @@ async fn create_tunnel_inner(
         )));
     }
     let https_enabled = request.https_enabled.unwrap_or(false);
-    if https_enabled && (!is_http || domains.is_empty()) {
+    if https_enabled && !is_http {
         return Err(response_error(unavailable(
             StatusCode::BAD_REQUEST,
-            "启用 HTTPS 的 HTTP 隧道必须绑定域名",
+            "只有 HTTP 隧道可以启用 HTTPS",
         )));
     }
-    let cert_id = if https_enabled {
+    // 共享入口靠 SNI 选隧道，必须有域名；独立端口可不填域名，按节点 IP 访问（回退自签证书）。
+    if https_enabled && shared_http && domains.is_empty() {
+        return Err(response_error(unavailable(
+            StatusCode::BAD_REQUEST,
+            "共享入口启用 HTTPS 必须绑定域名",
+        )));
+    }
+    let cert_required = shared_http || !domains.is_empty();
+    let cert_id = if https_enabled && (cert_required || request.cert_id.is_some()) {
         let cert_id = request.cert_id.ok_or_else(|| {
             response_error(unavailable(
                 StatusCode::BAD_REQUEST,
@@ -1871,7 +2127,7 @@ async fn create_tunnel_inner(
     .await?;
     let mut cache_reservation = reservation;
     let tunnel = match sqlx::query_as::<_, TunnelRow>(
-        "INSERT INTO tunnels (id, user_id, client_id, node_id, name, carrier, protocol, remote_port, port_custom, target_host, target_port, target_url, http_access, https_enabled, cert_id, host_rewrite, backend_tls_insecure, speed_limit_mbps, max_conns, max_new_conns_per_sec, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING id, user_id, NULL::text AS user_email, client_id, NULL::text AS client_name, node_id, NULL::text AS node_name, name, carrier, protocol, remote_port, target_host, target_port, target_url, status, enabled, speed_limit_mbps, max_conns, max_new_conns_per_sec, last_error",
+        "INSERT INTO tunnels (id, user_id, client_id, node_id, name, carrier, protocol, remote_port, port_custom, target_host, target_port, target_url, http_access, https_enabled, cert_id, host_rewrite, backend_tls_insecure, speed_limit_mbps, max_conns, max_new_conns_per_sec, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING id, user_id, NULL::text AS user_email, client_id, NULL::text AS client_name, node_id, NULL::text AS node_name, (SELECT n2.public_host FROM nodes n2 WHERE n2.id = node_id) AS node_public_host, name, carrier, protocol, remote_port, target_host, target_port, target_url, status, enabled, speed_limit_mbps, max_conns, max_new_conns_per_sec, last_error",
     )
     .bind(id)
     .bind(owner_user_id)
@@ -1904,57 +2160,19 @@ async fn create_tunnel_inner(
         }
     };
     for (domain, approved) in prepared_domains {
-        let cooldown_owner = match sqlx::query_scalar::<_, Uuid>(
-            "SELECT user_id FROM tunnel_domains WHERE domain = $1 AND status IN ('rejected', 'cooldown') AND cooldown_until > now() FOR UPDATE",
-        )
-        .bind(&domain)
-        .fetch_optional(&mut *transaction)
-        .await
-        {
-            Ok(owner) => owner,
-            Err(_) => {
-                let _ = transaction.rollback().await;
-                rollback_port_reservation(cache_reservation.take(), request.node_id, &state, pg).await;
-                return Err(response_error(unavailable(StatusCode::SERVICE_UNAVAILABLE, "数据库暂不可用")));
-            }
-        };
-        if cooldown_owner.is_some_and(|owner| owner != owner_user_id) {
-            let _ = transaction.rollback().await;
-            rollback_port_reservation(cache_reservation.take(), request.node_id, &state, pg).await;
-            return Err(response_error(unavailable(StatusCode::CONFLICT, "该域名仍在冷却期内，只有原用户可以重新绑定")));
-        }
         let domain_status = if approved { "approved" } else { "pending_review" };
-        let domain_write: Result<(), sqlx::Error> = if cooldown_owner.is_some() {
-            sqlx::query("UPDATE tunnel_domains SET tunnel_id = $1, status = $2, reviewed_by = NULL, reviewed_at = NULL, cooldown_until = NULL, created_at = now() WHERE domain = $3")
-                .bind(id)
-                .bind(domain_status)
-                .bind(&domain)
-                .execute(&mut *transaction)
-                .await
-                .map(|_| ())
-        } else {
-            match sqlx::query("DELETE FROM tunnel_domains WHERE domain = $1 AND status IN ('rejected', 'cooldown') AND cooldown_until <= now()")
-                .bind(&domain)
-                .execute(&mut *transaction)
-                .await
-            {
-                Ok(_) => sqlx::query("INSERT INTO tunnel_domains (id, tunnel_id, user_id, domain, status) VALUES ($1, $2, $3, $4, $5)")
-                    .bind(Uuid::new_v4())
-                    .bind(id)
-                    .bind(owner_user_id)
-                    .bind(&domain)
-                    .bind(domain_status)
-                    .execute(&mut *transaction)
-                    .await
-                    .map(|_| ()),
-                Err(error) => Err(error),
-            }
-        };
-        if domain_write.is_err() {
+        if let Err(error) =
+            bind_tunnel_domain(&mut transaction, id, owner_user_id, &domain, domain_status).await
+        {
             let _ = transaction.rollback().await;
             rollback_port_reservation(cache_reservation.take(), request.node_id, &state, pg).await;
-            return Err(response_error(unavailable(StatusCode::CONFLICT, "域名已被占用或审核记录创建失败")));
+            return Err(error);
         }
+    }
+    if let Err(error) = ensure_domain_endpoints_free(&mut transaction, id).await {
+        let _ = transaction.rollback().await;
+        rollback_port_reservation(cache_reservation.take(), request.node_id, &state, pg).await;
+        return Err(error);
     }
     if let Err(error) = write_audit(
         &mut transaction,

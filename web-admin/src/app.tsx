@@ -13,13 +13,18 @@ import NodesPage from '@/pages/NodesPage'
 import NodeSecurityEventsPage from '@/pages/NodeSecurityEventsPage'
 import NodeSecurityPolicyPage from '@/pages/NodeSecurityPolicyPage'
 import OrdersPage from '@/pages/OrdersPage'
+import PaymentChannelsPage from '@/pages/PaymentChannelsPage'
 import PlansPage from '@/pages/PlansPage'
 import SettingsPage from '@/pages/SettingsPage'
+import ThemesPage from '@/pages/ThemesPage'
 import UsersPage from '@/pages/UsersPage'
 import DashboardPage from '@/pages/DashboardPage'
 import ResourcePage from '@/pages/ResourcePage'
 import TunnelsPage from '@/pages/TunnelsPage'
+import { FullPageLoader } from '@/components/FullPageLoader'
+import { ToastHost } from '@/components/Toast'
 import { useAuthStore } from '@/stores/auth'
+import { useBrandingStore } from '@/stores/branding'
 import { useThemeStore } from '@/stores/theme'
 import './styles.css'
 
@@ -27,17 +32,22 @@ const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 1, ref
 
 export default function App() {
   const applyTheme = useThemeStore((state) => state.apply)
+  const loadBranding = useBrandingStore((state) => state.load)
   useEffect(() => {
     applyTheme()
     const media = window.matchMedia('(prefers-color-scheme: dark)')
     media.addEventListener('change', applyTheme)
     return () => media.removeEventListener('change', applyTheme)
   }, [applyTheme])
+  useEffect(() => {
+    void loadBranding()
+  }, [loadBranding])
 
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <AdminRoutes />
+        <ToastHost />
       </BrowserRouter>
     </QueryClientProvider>
   )
@@ -57,7 +67,7 @@ function AdminRoutes() {
     return () => { active = false }
   }, [])
   if (statusError) return <FullPageMessage>{t('errors.boardUnreachable')}</FullPageMessage>
-  if (initialized === null) return <FullPageMessage>{t('errors.checkingInit')}</FullPageMessage>
+  if (initialized === null) return <FullPageLoader />
   if (!initialized) return <Routes><Route path="*" element={<InitPage />} /></Routes>
   return (
     <Routes>
@@ -69,15 +79,16 @@ function AdminRoutes() {
         <Route path="/users" element={<UsersPage />} />
         <Route path="/plans" element={<PlansPage />} />
         <Route path="/orders" element={<OrdersPage />} />
+        <Route path="/payments" element={<PaymentChannelsPage />} />
         <Route path="/clients" element={<ClientsPage audience="admin" />} />
         <Route path="/tunnels" element={<TunnelsPage />} />
         <Route path="/certificates" element={<CertificatesPage />} />
         <Route path="/security/domains" element={<DomainWhitelistPage />} />
         <Route path="/settings" element={<SettingsPage />} />
-        <Route path="/themes" element={<ResourcePage titleKey="pages.themes" endpoint="/v1/admin/themes" />} />
+        <Route path="/themes" element={<ThemesPage />} />
         <Route path="/security" element={<NodeSecurityPolicyPage />} />
         <Route path="/security/events" element={<NodeSecurityEventsPage />} />
-        <Route path="/audit-logs" element={<ResourcePage titleKey="pages.auditLogs" endpoint="/v1/admin/audit-logs" />} />
+        <Route path="/audit-logs" element={<ResourcePage endpoint="/v1/admin/audit-logs" />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
@@ -85,7 +96,6 @@ function AdminRoutes() {
 }
 
 function ProtectedLayout() {
-  const { t } = useTranslation()
   const account = useAuthStore((state) => state.account)
   const setAccount = useAuthStore((state) => state.setAccount)
   const [loading, setLoading] = useState(true)
@@ -108,11 +118,15 @@ function ProtectedLayout() {
     })
     return () => { active = false }
   }, [setAccount])
-  if (loading) return <FullPageMessage>{t('errors.verifyingSession')}</FullPageMessage>
+  if (loading) return <FullPageLoader />
   if (!account || account.role !== 'admin') return <Navigate to="/login" replace />
   return <AppLayout />
 }
 
 function FullPageMessage({ children }: { children: ReactNode }) {
-  return <main className="min-h-screen flex items-center justify-center bg-background text-sm text-muted-foreground">{children}</main>
+  return (
+    <main className="ambient-surface min-h-screen flex items-center justify-center text-sm text-muted-foreground">
+      {children}
+    </main>
+  )
 }

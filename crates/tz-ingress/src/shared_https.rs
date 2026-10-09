@@ -141,10 +141,30 @@ pub async fn serve(listener: SharedHttpsListener) -> io::Result<()> {
             filing: listener.filing.clone(),
         });
         tokio::spawn(async move {
-            let Ok(Ok(tls)) =
-                tokio::time::timeout(std::time::Duration::from_secs(10), acceptor.accept(inbound)).await
-            else {
-                return;
+            let tls = {
+                let _permit = match ctx.guard.acquire_tls_handshake() {
+                    Ok(permit) => permit,
+                    Err(verdict) => {
+                        ctx.guard.record_if_denied(&verdict, peer.ip(), None);
+                        return;
+                    }
+                };
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    acceptor.accept(inbound),
+                )
+                .await
+                {
+                    Ok(Ok(tls)) => tls,
+                    Ok(Err(err)) => {
+                        tracing::debug!(%peer, %err, "shared https handshake failed");
+                        return;
+                    }
+                    Err(_) => {
+                        tracing::debug!(%peer, "shared https handshake timed out");
+                        return;
+                    }
+                }
             };
             let _ = crate::http_l7::serve_inbound_hyper(tls, peer, ctx, "https").await;
         });

@@ -4,7 +4,9 @@ import { useTranslation } from 'react-i18next'
 import { Check, Database, Server } from 'lucide-react'
 import apiClient from '@/api/client'
 import { Button } from '@/components/Button'
+import { FullPageLoader } from '@/components/FullPageLoader'
 import { translateApiError } from '@/i18n/apiError'
+import { toast } from '@/stores/toast'
 import { validatePassword } from '@/utils/passwordPolicy'
 
 type InitFields = {
@@ -38,7 +40,6 @@ export default function InitPage() {
   const [fields, setFields] = useState(initialFields)
   const [checking, setChecking] = useState(true)
   const [busy, setBusy] = useState<'postgres' | 'redis' | 'submit' | null>(null)
-  const [message, setMessage] = useState('')
   const [finished, setFinished] = useState(false)
 
   useEffect(() => {
@@ -46,13 +47,12 @@ export default function InitPage() {
       .then((response) => {
         if (response.data.initialized) navigate('/login', { replace: true })
       })
-      .catch(() => setMessage(t('init.cannotReachBoard')))
+      .catch(() => toast.error(t('init.cannotReachBoard')))
       .finally(() => setChecking(false))
   }, [navigate, t])
 
   function update<K extends keyof InitFields>(key: K, value: InitFields[K]) {
     setFields((current) => ({ ...current, [key]: value }))
-    setMessage('')
   }
 
   function postgresPayload() {
@@ -79,12 +79,11 @@ export default function InitPage() {
 
   async function testConnection(kind: 'postgres' | 'redis') {
     setBusy(kind)
-    setMessage(t('init.testingConnection'))
     try {
       await apiClient.post(`/init/test/${kind}`, { [kind]: kind === 'postgres' ? postgresPayload() : redisPayload() })
-      setMessage(kind === 'postgres' ? t('init.postgresOk') : t('init.redisOk'))
+      toast.success(kind === 'postgres' ? t('init.postgresOk') : t('init.redisOk'))
     } catch (cause) {
-      setMessage(translateApiError(t, cause))
+      toast.error(translateApiError(t, cause))
     } finally {
       setBusy(null)
     }
@@ -93,16 +92,15 @@ export default function InitPage() {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (fields.admin_password !== fields.admin_password_confirm) {
-      setMessage(t('init.passwordMismatch'))
+      toast.error(t('init.passwordMismatch'))
       return
     }
     const passwordError = validatePassword(fields.admin_password)
     if (passwordError) {
-      setMessage(t(passwordError))
+      toast.error(t(passwordError))
       return
     }
     setBusy('submit')
-    setMessage(t('init.initializing'))
     try {
       await apiClient.post('/init/complete', {
         postgres: postgresPayload(),
@@ -112,17 +110,16 @@ export default function InitPage() {
       })
       setFields(initialFields)
       setFinished(true)
+      toast.success(t('init.doneTitle'))
       window.setTimeout(() => window.location.assign('/login'), 1200)
     } catch (cause) {
-      setMessage(translateApiError(t, cause))
+      toast.error(translateApiError(t, cause))
     } finally {
       setBusy(null)
     }
   }
 
-  if (checking) {
-    return <main className="min-h-screen flex items-center justify-center bg-background"><p className="text-sm text-muted-foreground">{t('errors.checkingInit')}</p></main>
-  }
+  if (checking) return <FullPageLoader />
 
   return (
     <main className="min-h-screen bg-background flex items-center justify-center p-6">
@@ -170,7 +167,6 @@ export default function InitPage() {
                 <Field label={t('init.confirmPassword')}><input className="apple-input w-full" type="password" minLength={6} maxLength={32} value={fields.admin_password_confirm} onChange={(event) => update('admin_password_confirm', event.target.value)} required autoComplete="new-password" /></Field>
               </div>
             </section>
-            {message && <p className="text-sm text-apple-red" role="status">{message}</p>}
             <Button type="submit" loading={busy === 'submit'}>{t('init.submit')}</Button>
           </form>
         )}

@@ -1,54 +1,39 @@
+use portable_atomic::AtomicU64;
 use crate::{
     registry::{BoxFuture, CarrierError, CarrierFactory, CarrierListener, CarrierSession},
-    stream_preamble::{read_stream_preamble, write_stream_preamble},
     tcp_enc::EncryptedStream,
+    tcp_mux::{LinkHandler, MuxLink, TcpMuxStream},
     types::{
         carrier_secret_for, decode_carrier_bind, encode_carrier_bind, random_link_nonce,
         read_carrier_bind_ack, write_carrier_bind_ack, CarrierStream, ConnectConfig,
-        DatagramDropped, FlowId, LinkNonce, ListenConfig, OpenError, PeerIdentity,
-        SessionStats, SocketKind, StreamHeader, TcpCarrierKeys, CARRIER_BIND_LEN,
-        CARRIER_BIND_TIMEOUT, LINK_CONFIRM, LINK_NONCE_LEN,
+        DatagramDropped, FlowId, ListenConfig, LinkNonce, OpenError, PeerIdentity, SessionStats,
+        SocketKind, StreamHeader, TcpCarrierKeys, CARRIER_BIND_LEN, CARRIER_BIND_TIMEOUT,
+        LINK_CONFIRM, LINK_NONCE_LEN,
     },
 };
 use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc, OnceLock,
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex, MutexGuard, OnceLock,
 };
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, watch, Mutex, Notify};
+use tokio::sync::{mpsc, Notify};
 
-/// 数据面长连数量（TCP/HTTP 隧道每条访客占一条）。
-const TCP_LINK_POOL: usize = 8;
-/// UDP 报文在控制连接上的帧类型。
-const DGRAM_FRAME: u8 = 0x06;
+/// client 每隧道维持的常驻复用链路数；多条分摊单条 TCP 丢包时的队头阻塞。
+const TCP_MUX_LINKS: usize = 4;
+const ACCEPT_QUEUE: usize = 1024;
 const DGRAM_QUEUE: usize = 1024;
-/// 控制链路一次 flush 合并的数据报上限（只合并已排队的，不等待凑批，不增加延迟）。
-const DGRAM_WRITE_BATCH: usize = 64;
-const DGRAM_WRITE_BATCH_BYTES: usize = 64 * 1024;
 const MAX_DGRAM_PAYLOAD: usize = 65_507;
-/// 握手确认帧后 client 声明的链路角色。
-const LINK_ROLE_DATA: u8 = 0;
-const LINK_ROLE_CONTROL: u8 = 1;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum LinkRole {
-    /// 承载 UDP 数据报；新的控制链路会接管并替换旧的（client 重连后 node 侧池子仍在）。
-    Control,
-    Data,
-}
-
-impl LinkRole {
-    fn wire(self) -> u8 {
-        match self {
-            Self::Control => LINK_ROLE_CONTROL,
-            Self::Data => LINK_ROLE_DATA,
-        }
-    }
-}
+/// node 打开流时没有可用链路的最长等待（client 正在重连）。
+const OPEN_WAIT: Duration = Duration::from_secs(10);
+/// 所有链路断开后 client 连续重拨失败该次数即关闭会话，交由上层重连并上报状态。
+const MAX_REDIAL_FAILURES: u32 = 3;
+/// 握手确认帧后 client 声明的链路角色；旧版一访客一链路的角色（0/1）不再接受。
+const LINK_ROLE_MUX: u8 = 2;
 
 inventory::submit! {
     CarrierFactory {
@@ -60,9 +45,13 @@ inventory::submit! {
     }
 }
 
-fn tunnel_pools() -> &'static DashMap<uuid::Uuid, Arc<TcpPoolSession>> {
-    static POOLS: OnceLock<DashMap<uuid::Uuid, Arc<TcpPoolSession>>> = OnceLock::new();
-    POOLS.get_or_init(DashMap::new)
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn tunnel_sessions() -> &'static DashMap<uuid::Uuid, Arc<TcpMuxSession>> {
+    static SESSIONS: OnceLock<DashMap<uuid::Uuid, Arc<TcpMuxSession>>> = OnceLock::new();
+    SESSIONS.get_or_init(DashMap::new)
 }
 
 fn listen(config: ListenConfig) -> BoxFuture<'static, Result<Box<dyn CarrierListener>, CarrierError>> {
@@ -76,14 +65,14 @@ fn listen(config: ListenConfig) -> BoxFuture<'static, Result<Box<dyn CarrierList
                     Ok(accepted) => accepted,
                     Err(err) => {
                         tracing::warn!(?err, "tcp carrier accept failed");
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        tokio::time::sleep(Duration::from_millis(50)).await;
                         continue;
                     }
                 };
                 let node_config = node_config.clone();
                 let session_tx = session_tx.clone();
                 tokio::spawn(async move {
-                    match finish_tcp_link(stream, node_config).await {
+                    match finish_tcp_link(stream, remote, node_config).await {
                         Ok(Some(session)) => {
                             let _ = session_tx.send(session).await;
                         }
@@ -102,12 +91,25 @@ fn listen(config: ListenConfig) -> BoxFuture<'static, Result<Box<dyn CarrierList
     })
 }
 
-/// 返回 `Some` 仅当新建隧道池（需向 node 注册 session）；追加链路返回 `None`。
+/// 返回 `Some` 仅当新建隧道会话（需向 node 注册 session）；追加链路返回 `None`。
 async fn finish_tcp_link(
     stream: TcpStream,
+    remote: std::net::SocketAddr,
     node_config: Arc<arc_swap::ArcSwap<tz_proto::NodeConfig>>,
 ) -> Result<Option<Arc<dyn CarrierSession>>, CarrierError> {
-    let (stream, tunnel_id, client_id, role) =
+    let mut stream = stream;
+    let _ = stream.set_nodelay(true);
+    let cn_residency = node_config.load().cn_residency;
+    if let Err(err) = crate::cn_residency::enforce_peer_cn(cn_residency, remote).await {
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2),
+            stream.write_all(&[crate::types::BIND_ACK_RESIDENCY]),
+        )
+        .await;
+        let _ = stream.shutdown().await;
+        return Err(CarrierError::Io(err));
+    }
+    let (stream, tunnel_id, client_id) =
         tokio::time::timeout(CARRIER_BIND_TIMEOUT, node_handshake(stream, &node_config))
             .await
             .map_err(|_| {
@@ -117,19 +119,29 @@ async fn finish_tcp_link(
                 ))
             })?
             .map_err(CarrierError::Io)?;
-    match tunnel_pools().entry(tunnel_id) {
-        dashmap::mapref::entry::Entry::Occupied(entry) => {
-            entry.get().attach_node_link(stream, role).await;
-            Ok(None)
+    // DashMap 守卫是同步锁，不能跨 await 持有：并发接入的链路会把 worker 线程全部阻塞在分片锁上。
+    let (session, created) = match tunnel_sessions().entry(tunnel_id) {
+        dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+            if entry.get().is_closed() {
+                let session = TcpMuxSession::new(tunnel_id, client_id, false);
+                entry.insert(session.clone());
+                (session, true)
+            } else {
+                (entry.get().clone(), false)
+            }
         }
         dashmap::mapref::entry::Entry::Vacant(entry) => {
-            let session = TcpPoolSession::new(tunnel_id, client_id, false);
-            session.attach_node_link(stream, role).await;
+            let session = TcpMuxSession::new(tunnel_id, client_id, false);
             entry.insert(session.clone());
-            tracing::info!(%tunnel_id, %client_id, "tcp carrier pool ready");
-            Ok(Some(session as Arc<dyn CarrierSession>))
+            (session, true)
         }
+    };
+    session.attach_link(stream);
+    if !created {
+        return Ok(None);
     }
+    tracing::info!(%tunnel_id, %client_id, "tcp carrier session ready");
+    Ok(Some(session as Arc<dyn CarrierSession>))
 }
 
 fn confirm_mismatch() -> std::io::Error {
@@ -143,7 +155,7 @@ fn confirm_mismatch() -> std::io::Error {
 async fn node_handshake(
     mut stream: TcpStream,
     node_config: &arc_swap::ArcSwap<tz_proto::NodeConfig>,
-) -> std::io::Result<(EncryptedStream, uuid::Uuid, uuid::Uuid, LinkRole)> {
+) -> std::io::Result<(EncryptedStream, uuid::Uuid, uuid::Uuid)> {
     let mut bind = [0_u8; CARRIER_BIND_LEN];
     stream.read_exact(&mut bind).await?;
     let (tunnel_id, client_id) = decode_carrier_bind(&bind)
@@ -171,19 +183,15 @@ async fn node_handshake(
     if &confirm != LINK_CONFIRM {
         return Err(confirm_mismatch());
     }
-    let role = match stream.read_u8().await? {
-        LINK_ROLE_CONTROL => LinkRole::Control,
-        LINK_ROLE_DATA => LinkRole::Data,
-        _ => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "invalid tcp carrier link role",
-            ))
-        }
-    };
+    if stream.read_u8().await? != LINK_ROLE_MUX {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "tcp carrier link role unsupported (tz-client too old, upgrade required)",
+        ));
+    }
     stream.write_all(LINK_CONFIRM).await?;
     stream.flush().await?;
-    Ok((stream, tunnel_id, client_id, role))
+    Ok((stream, tunnel_id, client_id))
 }
 
 /// client 侧：与 [`node_handshake`] 对称。
@@ -192,7 +200,6 @@ async fn client_handshake(
     secret: &str,
     tunnel_id: uuid::Uuid,
     client_id: uuid::Uuid,
-    role: LinkRole,
 ) -> std::io::Result<EncryptedStream> {
     let setup = async {
         let mut stream = TcpStream::connect(server_addr).await?;
@@ -209,7 +216,7 @@ async fn client_handshake(
         let mut stream = EncryptedStream::new(stream, read_key, write_key);
         let mut confirm_and_role = [0_u8; LINK_CONFIRM.len() + 1];
         confirm_and_role[..LINK_CONFIRM.len()].copy_from_slice(LINK_CONFIRM);
-        confirm_and_role[LINK_CONFIRM.len()] = role.wire();
+        confirm_and_role[LINK_CONFIRM.len()] = LINK_ROLE_MUX;
         stream.write_all(&confirm_and_role).await?;
         stream.flush().await?;
         let mut confirm = [0_u8; LINK_CONFIRM.len()];
@@ -238,24 +245,18 @@ fn connect_factory(
                 "tcp carrier missing carrier_secret from board",
             )));
         }
-        let stream = client_handshake(
-            config.server_addr,
-            &secret,
-            config.tunnel_id,
-            config.client_id,
-            LinkRole::Control,
-        )
-        .await
-        .map_err(CarrierError::Io)?;
-        let session = TcpPoolSession::new(config.tunnel_id, config.client_id, true);
-        session.set_dial_target(DialTarget {
+        let stream = client_handshake(config.server_addr, &secret, config.tunnel_id, config.client_id)
+            .await
+            .map_err(CarrierError::Io)?;
+        let session = TcpMuxSession::new(config.tunnel_id, config.client_id, true);
+        *lock(&session.dial_target) = Some(DialTarget {
             server_addr: config.server_addr,
             tunnel_id: config.tunnel_id,
             client_id: config.client_id,
             secret: Arc::from(secret),
         });
-        session.spawn_control_plane(stream);
-        session.maintain_pool();
+        session.attach_link(stream);
+        session.maintain_links();
         Ok(session as Arc<dyn CarrierSession>)
     })
 }
@@ -285,42 +286,26 @@ impl CarrierListener for TcpCarrierListener {
     }
 }
 
-struct TcpPoolSession {
+/// 一个隧道的 carrier 会话：若干条常驻复用链路。node 侧跨 client 重连保留，新链路直接挂入。
+struct TcpMuxSession {
     tunnel_id: uuid::Uuid,
     peer: PeerIdentity,
     client_side: bool,
-    idle: Mutex<Vec<EncryptedStream>>,
-    wait: Notify,
-    accept_tx: mpsc::Sender<(StreamHeader, CarrierStream)>,
-    accept_rx: Mutex<mpsc::Receiver<(StreamHeader, CarrierStream)>>,
-    dgram_out_tx: mpsc::Sender<(FlowId, Bytes)>,
-    dgram_out_rx: Arc<Mutex<mpsc::Receiver<(FlowId, Bytes)>>>,
+    links: Mutex<Vec<Arc<MuxLink>>>,
+    links_changed: Notify,
+    accept_tx: mpsc::Sender<(StreamHeader, TcpMuxStream)>,
+    accept_rx: tokio::sync::Mutex<mpsc::Receiver<(StreamHeader, TcpMuxStream)>>,
     dgram_in_tx: mpsc::Sender<(FlowId, Bytes)>,
-    datagram_rx: Mutex<mpsc::Receiver<(FlowId, Bytes)>>,
-    /// 每接入一条控制链路 +1；旧控制链路任务看到变化后退出。关闭会话时也 +1。
-    control_generation: watch::Sender<u64>,
-    closed: Arc<AtomicBool>,
+    datagram_rx: tokio::sync::Mutex<mpsc::Receiver<(FlowId, Bytes)>>,
+    closed: AtomicBool,
     closed_notify: Notify,
     dial_target: Mutex<Option<DialTarget>>,
-    stats: SessionStats,
     streams_opened: AtomicU64,
 }
 
-async fn superseded(generation_rx: &mut watch::Receiver<u64>, generation: u64) {
-    loop {
-        if *generation_rx.borrow_and_update() != generation {
-            return;
-        }
-        if generation_rx.changed().await.is_err() {
-            return;
-        }
-    }
-}
-
-impl TcpPoolSession {
+impl TcpMuxSession {
     fn new(tunnel_id: uuid::Uuid, client_id: uuid::Uuid, client_side: bool) -> Arc<Self> {
-        let (accept_tx, accept_rx) = mpsc::channel(64);
-        let (dgram_out_tx, dgram_out_rx) = mpsc::channel(DGRAM_QUEUE);
+        let (accept_tx, accept_rx) = mpsc::channel(ACCEPT_QUEUE);
         let (dgram_in_tx, dgram_in_rx) = mpsc::channel(DGRAM_QUEUE);
         Arc::new(Self {
             tunnel_id,
@@ -329,176 +314,73 @@ impl TcpPoolSession {
                 tunnel_id: Some(tunnel_id),
             },
             client_side,
-            idle: Mutex::new(Vec::new()),
-            wait: Notify::new(),
+            links: Mutex::new(Vec::new()),
+            links_changed: Notify::new(),
             accept_tx,
-            accept_rx: Mutex::new(accept_rx),
-            dgram_out_tx,
-            dgram_out_rx: Arc::new(Mutex::new(dgram_out_rx)),
+            accept_rx: tokio::sync::Mutex::new(accept_rx),
             dgram_in_tx,
-            datagram_rx: Mutex::new(dgram_in_rx),
-            control_generation: watch::channel(0).0,
-            closed: Arc::new(AtomicBool::new(false)),
+            datagram_rx: tokio::sync::Mutex::new(dgram_in_rx),
+            closed: AtomicBool::new(false),
             closed_notify: Notify::new(),
             dial_target: Mutex::new(None),
-            stats: SessionStats::default(),
             streams_opened: AtomicU64::new(0),
         })
     }
 
-    fn set_dial_target(self: &Arc<Self>, target: DialTarget) {
-        if let Ok(mut guard) = self.dial_target.try_lock() {
-            *guard = Some(target);
-        }
-    }
-
-    async fn dial_data_link(self: &Arc<Self>) {
-        let Some(target) = self.dial_target.lock().await.clone() else {
-            return;
+    fn attach_link(self: &Arc<Self>, stream: EncryptedStream) {
+        let weak = Arc::downgrade(self);
+        let handler = LinkHandler {
+            accept_tx: self.accept_tx.clone(),
+            dgram_in_tx: self.dgram_in_tx.clone(),
         };
-        if self.closed.load(Ordering::SeqCst) {
+        let link = MuxLink::spawn(
+            stream,
+            self.client_side,
+            handler,
+            Box::new(move |link: &Arc<MuxLink>| {
+                if let Some(session) = weak.upgrade() {
+                    session.detach_link(link);
+                }
+            }),
+        );
+        if self.is_closed() {
+            link.close();
             return;
         }
-        match client_handshake(
-            target.server_addr,
-            &target.secret,
-            target.tunnel_id,
-            target.client_id,
-            LinkRole::Data,
-        )
-        .await
         {
-            Ok(stream) => self.spawn_data_link(stream),
-            Err(err) => {
-                tracing::warn!(tunnel_id = %target.tunnel_id, ?err, "tcp carrier data link handshake failed");
-            }
+            let mut links = lock(&self.links);
+            links.retain(|existing| !existing.is_closed());
+            links.push(link);
         }
+        self.links_changed.notify_waiters();
     }
 
-    async fn attach_node_link(self: &Arc<Self>, stream: EncryptedStream, role: LinkRole) {
-        if self.closed.load(Ordering::SeqCst) {
-            return;
-        }
-        match role {
-            LinkRole::Control => self.spawn_control_plane(stream),
-            LinkRole::Data => self.push_idle(stream).await,
-        }
+    fn detach_link(&self, link: &Arc<MuxLink>) {
+        lock(&self.links).retain(|existing| !Arc::ptr_eq(existing, link) && !existing.is_closed());
+        self.links_changed.notify_waiters();
     }
 
-    /// client 预建数据长连，bind 后等待 node 写入 stream 头。
-    fn spawn_data_link(self: &Arc<Self>, stream: EncryptedStream) {
-        if self.closed.load(Ordering::SeqCst) {
-            return;
-        }
-        let accept_tx = self.accept_tx.clone();
-        let session = self.clone();
-        tokio::spawn(async move {
-            let mut stream = stream;
-            match read_stream_preamble(&mut stream).await {
-                Ok(header) => {
-                    let _ = accept_tx
-                        .send((header, CarrierStream::tcp_encrypted(stream)))
-                        .await;
-                }
-                Err(err) => tracing::debug!(?err, "tcp stream preamble failed"),
-            }
-            session.dial_data_link().await;
-        });
+    fn alive_links(&self) -> usize {
+        lock(&self.links).iter().filter(|link| !link.is_closed()).count()
     }
 
-    fn spawn_control_plane(self: &Arc<Self>, stream: EncryptedStream) {
-        if self.closed.load(Ordering::SeqCst) {
-            return;
-        }
-        let mut generation = 0;
-        self.control_generation.send_modify(|current| {
-            *current += 1;
-            generation = *current;
-        });
-        let (mut reader, mut writer) = tokio::io::split(stream);
+    /// 新流优先放到最近有心跳、承载流最少的链路上。
+    fn pick_stream_link(&self) -> Option<Arc<MuxLink>> {
+        lock(&self.links)
+            .iter()
+            .filter(|link| !link.is_closed())
+            .min_by_key(|link| (!link.recently_alive(), link.stream_count()))
+            .cloned()
+    }
 
-        let out_rx = self.dgram_out_rx.clone();
-        let closed = Arc::clone(&self.closed);
-        let mut writer_generation = self.control_generation.subscribe();
-        tokio::spawn(async move {
-            let mut out_rx = tokio::select! {
-                guard = out_rx.lock_owned() => guard,
-                _ = superseded(&mut writer_generation, generation) => return,
-            };
-            let mut batch = Vec::new();
-            loop {
-                let first = tokio::select! {
-                    next = out_rx.recv() => match next {
-                        Some(next) => next,
-                        None => break,
-                    },
-                    _ = superseded(&mut writer_generation, generation) => break,
-                };
-                if closed.load(Ordering::SeqCst) {
-                    break;
-                }
-                batch.clear();
-                let mut next = Some(first);
-                let mut count = 0;
-                while let Some((flow, payload)) = next.take() {
-                    if payload.len() <= MAX_DGRAM_PAYLOAD {
-                        let len = payload.len() as u16;
-                        batch.push(DGRAM_FRAME);
-                        batch.extend_from_slice(&len.to_be_bytes());
-                        batch.extend_from_slice(&flow.0.to_be_bytes());
-                        batch.extend_from_slice(&payload);
-                    }
-                    count += 1;
-                    if count < DGRAM_WRITE_BATCH && batch.len() < DGRAM_WRITE_BATCH_BYTES {
-                        next = out_rx.try_recv().ok();
-                    }
-                }
-                if writer.write_all(&batch).await.is_err() || writer.flush().await.is_err() {
-                    break;
-                }
-                if batch.capacity() > 4 * DGRAM_WRITE_BATCH_BYTES {
-                    batch = Vec::new();
-                }
-            }
-        });
-
-        let in_tx = self.dgram_in_tx.clone();
-        let session = self.clone();
-        let mut reader_generation = self.control_generation.subscribe();
-        tokio::spawn(async move {
-            let read_loop = async {
-                let mut frame = [0_u8; 3];
-                loop {
-                    if reader.read_exact(&mut frame).await.is_err() {
-                        break;
-                    }
-                    if frame[0] != DGRAM_FRAME {
-                        break;
-                    }
-                    let len = u16::from_be_bytes([frame[1], frame[2]]) as usize;
-                    let mut flow_bytes = [0_u8; 8];
-                    if reader.read_exact(&mut flow_bytes).await.is_err() {
-                        break;
-                    }
-                    let mut payload = vec![0_u8; len];
-                    if reader.read_exact(&mut payload).await.is_err() {
-                        break;
-                    }
-                    let flow = FlowId(u64::from_be_bytes(flow_bytes));
-                    if in_tx.send((flow, Bytes::from(payload))).await.is_err() {
-                        break;
-                    }
-                }
-            };
-            tokio::select! {
-                _ = read_loop => {
-                    if session.client_side {
-                        session.close("tcp carrier control link lost");
-                    }
-                }
-                _ = superseded(&mut reader_generation, generation) => {}
-            }
-        });
+    /// 数据报固定走首条可用链路，保持同一 flow 的顺序。
+    fn pick_datagram_link(&self) -> Option<Arc<MuxLink>> {
+        let links = lock(&self.links);
+        links
+            .iter()
+            .find(|link| !link.is_closed() && link.recently_alive())
+            .or_else(|| links.iter().find(|link| !link.is_closed()))
+            .cloned()
     }
 
     async fn wait_closed(&self) {
@@ -511,67 +393,99 @@ impl TcpPoolSession {
         notified.await;
     }
 
-    async fn push_idle(&self, stream: EncryptedStream) {
-        if self.closed.load(Ordering::SeqCst) {
-            return;
+    async fn dial_link(self: &Arc<Self>) -> bool {
+        let Some(target) = lock(&self.dial_target).clone() else {
+            return false;
+        };
+        if self.is_closed() {
+            return false;
         }
-        self.idle.lock().await.push(stream);
-        self.wait.notify_waiters();
+        match client_handshake(target.server_addr, &target.secret, target.tunnel_id, target.client_id).await {
+            Ok(stream) => {
+                self.attach_link(stream);
+                true
+            }
+            Err(err) => {
+                tracing::warn!(tunnel_id = %target.tunnel_id, ?err, "tcp carrier link dial failed");
+                false
+            }
+        }
     }
 
-    fn maintain_pool(self: &Arc<Self>) {
+    /// client 侧把常驻链路补到 [`TCP_MUX_LINKS`]；链路全断且重拨持续失败时关闭会话。
+    fn maintain_links(self: &Arc<Self>) {
         let session = self.clone();
         tokio::spawn(async move {
-            for _ in 0..TCP_LINK_POOL {
-                session.dial_data_link().await;
+            let mut backoff = Duration::from_millis(200);
+            let mut failures = 0_u32;
+            while !session.is_closed() {
+                let changed = session.links_changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if session.alive_links() >= TCP_MUX_LINKS {
+                    tokio::select! {
+                        _ = &mut changed => {}
+                        _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                    }
+                    continue;
+                }
+                if session.dial_link().await {
+                    failures = 0;
+                    backoff = Duration::from_millis(200);
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
+                if session.alive_links() == 0 {
+                    failures += 1;
+                    if failures >= MAX_REDIAL_FAILURES {
+                        session.close("tcp carrier links lost");
+                        break;
+                    }
+                }
+                tokio::select! {
+                    _ = session.wait_closed() => break,
+                    _ = tokio::time::sleep(backoff) => {}
+                }
+                backoff = (backoff * 2).min(Duration::from_secs(5));
             }
         });
-    }
-
-    async fn take_idle(&self) -> Option<EncryptedStream> {
-        let deadline = tokio::time::Instant::now() + CARRIER_BIND_TIMEOUT;
-        loop {
-            if let Some(stream) = self.idle.lock().await.pop() {
-                return Some(stream);
-            }
-            if self.closed.load(Ordering::SeqCst) {
-                return None;
-            }
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                return None;
-            }
-            tokio::select! {
-                _ = self.wait.notified() => {}
-                _ = tokio::time::sleep(remaining) => return None,
-            }
-        }
     }
 }
 
 #[async_trait]
-impl CarrierSession for TcpPoolSession {
+impl CarrierSession for TcpMuxSession {
     async fn open_stream(&self, header: StreamHeader) -> Result<CarrierStream, OpenError> {
-        if self.is_closed() {
-            return Err(OpenError::Closed);
+        let deadline = tokio::time::Instant::now() + OPEN_WAIT;
+        loop {
+            if self.is_closed() {
+                return Err(OpenError::Closed);
+            }
+            let changed = self.links_changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if let Some(link) = self.pick_stream_link() {
+                if let Some(stream) = link.open_stream(&header) {
+                    self.streams_opened.fetch_add(1, Ordering::Relaxed);
+                    return Ok(CarrierStream::tcp_mux(stream));
+                }
+                continue;
+            }
+            tokio::select! {
+                _ = &mut changed => {}
+                _ = tokio::time::sleep_until(deadline) => return Err(OpenError::Closed),
+            }
         }
-        self.streams_opened.fetch_add(1, Ordering::Relaxed);
-        let mut stream = self.take_idle().await.ok_or(OpenError::Closed)?;
-        write_stream_preamble(&mut stream, &header)
-            .await
-            .map_err(|_| OpenError::Rejected)?;
-        Ok(CarrierStream::tcp_encrypted(stream))
     }
 
-    async fn accept_stream(
-        &self,
-    ) -> Result<(StreamHeader, CarrierStream), OpenError> {
+    async fn accept_stream(&self) -> Result<(StreamHeader, CarrierStream), OpenError> {
         if self.is_closed() {
             return Err(OpenError::Closed);
         }
         let mut accept_rx = self.accept_rx.lock().await;
         tokio::select! {
-            accepted = accept_rx.recv() => accepted.ok_or(OpenError::Closed),
+            accepted = accept_rx.recv() => accepted
+                .map(|(header, stream)| (header, CarrierStream::tcp_mux(stream)))
+                .ok_or(OpenError::Closed),
             _ = self.wait_closed() => Err(OpenError::Closed),
         }
     }
@@ -583,9 +497,14 @@ impl CarrierSession for TcpPoolSession {
         if data.len() > MAX_DGRAM_PAYLOAD {
             return Err(DatagramDropped::QueueFull);
         }
-        self.dgram_out_tx
-            .try_send((flow, data))
-            .map_err(|_| DatagramDropped::QueueFull)
+        let Some(link) = self.pick_datagram_link() else {
+            return Err(DatagramDropped::QueueFull);
+        };
+        if link.send_datagram(flow, data) {
+            Ok(())
+        } else {
+            Err(DatagramDropped::QueueFull)
+        }
     }
 
     async fn recv_datagram(&self) -> Result<(FlowId, Bytes), OpenError> {
@@ -604,19 +523,25 @@ impl CarrierSession for TcpPoolSession {
     }
 
     fn stats(&self) -> SessionStats {
-        self.stats
+        SessionStats {
+            streams_opened: self.streams_opened.load(Ordering::Relaxed),
+            ..SessionStats::default()
+        }
     }
 
     fn close(&self, reason: &str) {
         if self.closed.swap(true, Ordering::SeqCst) {
             return;
         }
-        tracing::info!(reason, "tcp carrier pool closed");
-        self.control_generation.send_modify(|current| *current += 1);
+        tracing::info!(tunnel_id = %self.tunnel_id, reason, "tcp carrier session closed");
+        let links: Vec<Arc<MuxLink>> = std::mem::take(&mut *lock(&self.links));
+        for link in links {
+            link.close();
+        }
         self.closed_notify.notify_waiters();
-        self.wait.notify_waiters();
+        self.links_changed.notify_waiters();
         if !self.client_side {
-            tunnel_pools().remove(&self.tunnel_id);
+            tunnel_sessions().remove_if(&self.tunnel_id, |_, session| std::ptr::eq(Arc::as_ptr(session), self));
         }
     }
 

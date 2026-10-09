@@ -6,8 +6,21 @@
   :root {
     --background: 0 0% 96.5%;
     --foreground: 0 0% 9.4%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 9.4%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 9.4%;
+    --primary: 0 0% 11%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 5% 96%;
+    --secondary-foreground: 0 0% 9.4%;
+    --accent: 240 5% 96%;
+    --accent-foreground: 0 0% 9.4%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
     --border: 240 6% 90%;
     --input: 240 6% 90%;
+    --ring: 0 0% 11%;
     --muted: 240 5% 96%;
     --muted-foreground: 0 4% 46%;
     --radius: 0.75rem;
@@ -23,14 +36,33 @@
     --color-gray-700: #48484a;
     --color-gray-800: #3a3a3c;
     --color-gray-900: #2c2c2e;
+    --color-danger: #ff3b30;
+    --color-red-50: #fef2f2;
+    --color-blue-50: #eff6ff;
+    --admin-list-column-gap: 12px;
+    --admin-page-max-width: 1800px;
+    --admin-border-radius: 8px;
   }
   .dark {
     --background: 0 0% 0%;
     --foreground: 0 0% 95%;
-    --border: 0 0% 15%;
-    --input: 0 0% 15%;
+    --card: 0 0% 5%;
+    --card-foreground: 0 0% 95%;
+    --popover: 0 0% 8%;
+    --popover-foreground: 0 0% 95%;
+    --primary: 0 0% 95%;
+    --primary-foreground: 0 0% 0%;
+    --secondary: 0 0% 10%;
+    --secondary-foreground: 0 0% 95%;
     --muted: 0 0% 10%;
     --muted-foreground: 0 0% 55%;
+    --accent: 0 0% 12%;
+    --accent-foreground: 0 0% 95%;
+    --destructive: 0 62% 30%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 15%;
+    --input: 0 0% 15%;
+    --ring: 0 0% 95%;
     --color-black: #ffffff;
     --color-white: #0a0a0a;
     --color-gray-50: #0a0a0a;
@@ -43,12 +75,16 @@
     --color-gray-700: #ababab;
     --color-gray-800: #cccccc;
     --color-gray-900: #e8e8e8;
+    --color-danger: #ff453a;
+    --color-red-50: rgba(255, 69, 58, 0.12);
+    --color-blue-50: rgba(10, 132, 255, 0.12);
   }
   * { @apply border-border; }
   html { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
-  body { @apply bg-background text-foreground; margin: 0; min-width: 320px; min-height: 100vh; font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+  body { @apply bg-background text-foreground; margin: 0; min-width: 320px; min-height: 100vh; font-family: var(--font-family); }
   h1, h2, h3, h4 { @apply font-display tracking-tight; }
   input, select, textarea { background-color: var(--color-white); color: var(--color-black); }
+  input[type='number'] { font-family: var(--font-family-number); font-variant-numeric: tabular-nums; }
   input::placeholder, textarea::placeholder { color: var(--color-gray-400); }
 }
 
@@ -58,4 +94,46 @@
   .apple-button-secondary { @apply inline-flex items-center justify-center rounded-full px-5 py-2.5 text-sm font-medium transition-all duration-200 bg-apple-gray-100 dark:bg-apple-gray-700 text-foreground hover:bg-apple-gray-200 active:scale-[0.98]; }
   .apple-input { @apply rounded-xl border border-border bg-white/80 dark:bg-black/40 px-4 py-3 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-black/10 focus:border-black/30 transition-all duration-200; }
   .apple-label { @apply text-sm font-medium text-foreground mb-1.5 block; }
+}
+
+.plans-traffic-quota-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+.plans-traffic-quota-row > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+.plans-traffic-quota-row > :last-child {
+  width: 112px;
+  flex-shrink: 0;
+}
+.plans-node-group-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.plans-node-group-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  background: var(--color-gray-100);
+}
+.plans-node-group-tag__remove {
+  display: inline-flex;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-gray-600);
+  cursor: pointer;
+}
+.plans-node-group-tag__remove:hover {
+  color: var(--color-black);
 }

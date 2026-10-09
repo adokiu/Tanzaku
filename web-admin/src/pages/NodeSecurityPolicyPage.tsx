@@ -12,6 +12,7 @@ import { GenericSidebar } from '@/components/GenericSidebar/GenericSidebar'
 import { PageListHeader } from '@/components/PageListHeader'
 import { Select } from '@/components/Select/Select'
 import { translateApiError } from '@/i18n/apiError'
+import { toast } from '@/stores/toast'
 import { translateField } from '@/i18n/fieldLabel'
 import { PolicyFormFields } from './security/PolicyFormFields'
 import { PolicySummaryTags } from './security/PolicySummaryTags'
@@ -38,8 +39,6 @@ export default function NodeSecurityPolicyPage() {
   const [overlayEnabled, setOverlayEnabled] = useState(true)
   const [globalForm, setGlobalForm] = useState<PolicyForm>(EMPTY_FORM)
   const [nodeForm, setNodeForm] = useState<PolicyForm>(EMPTY_FORM)
-  const [formError, setFormError] = useState('')
-
   const globalQuery = useQuery({
     queryKey: ['admin-security-global'],
     queryFn: async () => (await apiClient.get('/v1/admin/security/global')).data as { guard_policy: GuardPolicy },
@@ -67,10 +66,10 @@ export default function NodeSecurityPolicyPage() {
       apiClient.put('/v1/admin/security/global', { guard_policy: formToPolicy(globalForm) }),
     onSuccess: async () => {
       setGlobalOpen(false)
-      setFormError('')
       await invalidate()
+      toast.success(t('common.saveSuccess'))
     },
-    onError: (error) => setFormError(translateApiError(t, error)),
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const saveNode = useMutation({
@@ -82,10 +81,10 @@ export default function NodeSecurityPolicyPage() {
     onSuccess: async () => {
       setNodeOpen(false)
       setCreating(false)
-      setFormError('')
       await invalidate()
+      toast.success(t('common.saveSuccess'))
     },
-    onError: (error) => setFormError(translateApiError(t, error)),
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const toggleOverlay = useMutation({
@@ -96,7 +95,9 @@ export default function NodeSecurityPolicyPage() {
       }),
     onSuccess: async () => {
       await invalidate()
+      toast.success(t('common.operationSuccess'))
     },
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const deleteOverlay = useMutation({
@@ -107,12 +108,13 @@ export default function NodeSecurityPolicyPage() {
       }),
     onSuccess: async () => {
       await invalidate()
+      toast.success(t('common.deleteSuccess'))
     },
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   function openGlobal() {
     setGlobalForm(policyToForm(globalQuery.data?.guard_policy ?? {}))
-    setFormError('')
     setGlobalOpen(true)
   }
 
@@ -123,7 +125,6 @@ export default function NodeSecurityPolicyPage() {
     setNodeName(first?.name ?? '')
     setOverlayEnabled(true)
     setNodeForm(policyToForm(globalQuery.data?.guard_policy ?? {}))
-    setFormError('')
     setNodeOpen(true)
   }
 
@@ -133,7 +134,6 @@ export default function NodeSecurityPolicyPage() {
     setNodeName(node.name)
     setOverlayEnabled(node.overlay_enabled)
     setNodeForm(policyToForm(node.effective_policy ?? node.guard_policy, node.trusted_proxies))
-    setFormError('')
     setNodeOpen(true)
   }
 
@@ -208,7 +208,6 @@ export default function NodeSecurityPolicyPage() {
   return (
     <section className="page-container">
       <PageListHeader
-        title={t('pages.securityPolicy')}
         actions={(
           <>
             <Button variant="secondary" size="sm" onClick={openGlobal}>
@@ -270,7 +269,6 @@ export default function NodeSecurityPolicyPage() {
           </>
         )}
       >
-        {formError ? <p className="sidebar-form-error mb-3" role="alert">{formError}</p> : null}
         <PolicyFormFields form={globalForm} setForm={setGlobalForm} />
       </GenericSidebar>
 
@@ -303,7 +301,6 @@ export default function NodeSecurityPolicyPage() {
           </>
         )}
       >
-        {formError ? <p className="sidebar-form-error mb-3" role="alert">{formError}</p> : null}
         {creating ? (
           <FormField label={t('security.selectServer')} required>
             <Select

@@ -1,8 +1,6 @@
 use serde_json::{Map, Value};
 use sqlx::PgPool;
 
-pub const GLOBAL_GUARD_POLICY_KEY: &str = "global_guard_policy";
-
 pub const GUARD_MODULES: &[&str] = &[
     "ip_acl",
     "per_ip_limit",
@@ -76,19 +74,21 @@ pub fn strip_policy_meta(policy: &Value) -> Value {
 
 pub fn default_global_policy() -> Value {
     serde_json::json!({
-        "per_ip_limit": {"enabled": true, "max_new_per_sec": 64},
+        "per_ip_limit": {"enabled": true, "max_new": 64, "window_secs": 1},
         "udp_amplify": {
             "enabled": true,
-            "max_new_flows_per_sec": 128,
-            "max_packets_per_sec": 200000
+            "max_new_flows": 128,
+            "max_packets": 200000,
+            "window_secs": 1
         },
         "node_limits": {"enabled": true, "max_tunnels": 0},
         "block_http_on_l4": {"enabled": false},
-        "per_tunnel_ip_limit": {"enabled": false, "max_distinct_ips": 64},
+        "per_tunnel_ip_limit": {"enabled": false, "max_distinct_ips": 64, "window_secs": 300},
         "on_attack": {
             "enabled": false,
             "pause_minutes": 0,
-            "min_hits": 32
+            "min_hits": 32,
+            "reenable_cooldown_minutes": 0
         },
         "cn_residency": {"enabled": false},
         "cn_http_filing": {"enabled": false},
@@ -124,8 +124,7 @@ pub fn merge_guard_policy(global: &Value, node: &Value) -> Value {
 
 pub async fn load_global_guard_policy(pg: &PgPool) -> Value {
     let value: Option<Value> =
-        sqlx::query_scalar("SELECT value FROM system_settings WHERE key = $1")
-            .bind(GLOBAL_GUARD_POLICY_KEY)
+        sqlx::query_scalar("SELECT policy FROM global_guard_policy WHERE id = 1")
             .fetch_optional(pg)
             .await
             .ok()
@@ -137,11 +136,26 @@ pub async fn load_global_guard_policy(pg: &PgPool) -> Value {
     }
 }
 
-/// 隧道被攻击时的处置：`pause_minutes=0` 表示暂停后需手动恢复。
+pub async fn save_global_guard_policy<'e, E>(executor: E, policy: &Value) -> Result<(), sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    sqlx::query(
+        "INSERT INTO global_guard_policy (id, policy, updated_at) VALUES (1, $1, now())
+         ON CONFLICT (id) DO UPDATE SET policy = EXCLUDED.policy, updated_at = now()",
+    )
+    .bind(policy)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// 隧道被攻击时的处置：`pause_minutes=0` 表示暂停后需手动恢复。开启即在攻击开始时暂停。
+/// `reenable_cooldown_minutes>0` 时，自动暂停后进入冷却期，冷却结束前用户不能再次开启。
 #[derive(Debug, Clone, Copy)]
 pub struct OnAttackAction {
     pub pause_minutes: u32,
-    pub min_hits: u32,
+    pub reenable_cooldown_minutes: u32,
 }
 
 pub fn on_attack_action(policy: &Value) -> Option<OnAttackAction> {
@@ -149,15 +163,15 @@ pub fn on_attack_action(policy: &Value) -> Option<OnAttackAction> {
     if cfg.get("enabled").and_then(Value::as_bool) != Some(true) {
         return None;
     }
-    let num = |key: &str, default: u64| {
+    let number = |key: &str| {
         cfg.get(key)
             .and_then(|value| value.as_u64().or_else(|| value.as_f64().map(|n| n as u64)))
-            .unwrap_or(default)
+            .unwrap_or(0)
             .min(u64::from(u32::MAX)) as u32
     };
     Some(OnAttackAction {
-        pause_minutes: num("pause_minutes", 0),
-        min_hits: num("min_hits", 32).max(1),
+        pause_minutes: number("pause_minutes"),
+        reenable_cooldown_minutes: number("reenable_cooldown_minutes"),
     })
 }
 
@@ -209,6 +223,3 @@ pub fn max_tunnels_from_policy(policy: &Value) -> Option<u32> {
     }
 }
 
-pub fn is_global_guard_policy_key(key: &str) -> bool {
-    key == GLOBAL_GUARD_POLICY_KEY
-}

@@ -88,12 +88,13 @@ pub(crate) struct SubRow {
 const SUB_COLUMNS: &str = "s.id, s.user_id, s.traffic_quota_bytes, s.traffic_count_mode, s.traffic_period, s.starts_at, s.period_anchor, s.exhausted_period_start";
 
 impl SubRow {
-    pub fn period_start(&self, now: DateTime<Utc>) -> DateTime<Utc> {
+    pub fn period_start(&self, now: DateTime<Utc>, system_reset_mode: &str) -> DateTime<Utc> {
         crate::subscription_period::subscription_period_start(
             &self.traffic_period,
             self.starts_at,
             self.period_anchor,
             now,
+            system_reset_mode,
         )
     }
 }
@@ -238,7 +239,8 @@ async fn load_sub(
     .ok()
     .flatten()?;
     let quota = row.traffic_quota_bytes.filter(|quota| *quota > 0)?;
-    let period_start = row.period_start(now);
+    let system_mode = crate::system_settings::traffic_reset_mode(pg).await;
+    let period_start = row.period_start(now, &system_mode);
     let (bytes_in, bytes_out) = current_usage(pg, redis, &row, period_start).await;
     let live = Arc::new(LiveSub {
         id: sub_id,
@@ -348,7 +350,8 @@ pub async fn reevaluate_user(
         return;
     };
     invalidate_sub(row.id);
-    let period_start = row.period_start(Utc::now());
+    let system_mode = crate::system_settings::traffic_reset_mode(pg).await;
+    let period_start = row.period_start(Utc::now(), &system_mode);
     let (bytes_in, bytes_out) = {
         let _guard = crate::stats::settle_lock().await;
         current_usage(pg, redis.as_ref(), &row, period_start).await

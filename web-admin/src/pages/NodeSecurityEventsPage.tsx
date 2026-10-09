@@ -4,11 +4,12 @@ import { RefreshCw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { getPage } from '@/api/page'
 import { Button } from '@/components/Button'
+import { CellTooltip } from '@/components/CellTooltip/CellTooltip'
 import { type Column } from '@/components/DataTable'
 import { EntityList } from '@/components/EntityListPage/EntityListPage'
 import { PageListHeader } from '@/components/PageListHeader'
 import { translateField } from '@/i18n/fieldLabel'
-import { formatDateTime } from '@/utils/formatDateTime'
+import { formatDateTime, formatDurationSecs } from '@/utils/formatDateTime'
 import { translateGuardRule } from './security/policyShared'
 import './security/security.css'
 
@@ -17,10 +18,9 @@ type GuardEvent = {
   node_id: string
   node_name: string
   rule: string
-  peer: string | null
   tunnel_id: string | null
-  detail: string
-  hit_count: number
+  intensity: number
+  duration_secs: number
   first_seen_at: string
   last_seen_at: string
 }
@@ -47,23 +47,28 @@ export default function NodeSecurityEventsPage() {
         title: t('security.rule'),
         render: (row) => (
           <span className="data-table-cell">
-            <span className="data-table-tag data-table-tag--neutral" title={row.rule}>
+            <CellTooltip tip={row.rule} className="data-table-tag data-table-tag--neutral">
               {translateGuardRule(t, row.rule)}
-            </span>
+            </CellTooltip>
           </span>
         ),
       },
-      { key: 'peer', title: t('security.peer'), render: (row) => <span className="data-table-cell">{row.peer ?? '—'}</span> },
       {
         key: 'tunnel_id',
         title: t('security.tunnelId'),
         render: (row) => <span className="data-table-cell">{row.tunnel_id ?? '—'}</span>,
       },
-      { key: 'hit_count', title: t('security.hitCount'), width: 72, render: (row) => <span className="data-table-cell">{row.hit_count}</span> },
       {
-        key: 'detail',
-        title: t('security.detail'),
-        render: (row) => <span className="data-table-cell data-table-cell--truncate">{row.detail || '—'}</span>,
+        key: 'intensity',
+        title: t('security.intensity'),
+        width: 88,
+        render: (row) => <span className="data-table-cell">{row.intensity}</span>,
+      },
+      {
+        key: 'duration_secs',
+        title: t('security.duration'),
+        width: 96,
+        render: (row) => <span className="data-table-cell">{formatDurationSecs(row.duration_secs)}</span>,
       },
     ],
     [t],
@@ -72,7 +77,6 @@ export default function NodeSecurityEventsPage() {
   return (
     <section className="page-container">
       <PageListHeader
-        title={t('pages.securityEvents')}
         actions={(
           <Button
             variant="secondary"

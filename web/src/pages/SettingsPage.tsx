@@ -25,7 +25,7 @@ export default function SettingsPage() {
       <div className="grid gap-3">
         {(query.data ?? []).map((setting) => (
           <div className="page-card flex items-center justify-between gap-4 p-5" key={setting.key}>
-            <div><p className="font-medium">{labels[setting.key] ?? setting.key}</p><p className="mt-1 text-xs text-muted-foreground">{setting.key} · {setting.updated_at}</p></div>
+            <div><p className="font-medium">{labels[setting.key] ?? setting.key}</p><p className="mt-1 text-xs text-muted-foreground">{setting.key} {setting.updated_at}</p></div>
             {typeof setting.value === 'boolean' ? <Button type="button" variant={setting.value ? 'primary' : 'secondary'} loading={update.isPending} onClick={() => update.mutate({ key: setting.key, value: !setting.value })}>{setting.value ? '已启用' : '已关闭'}</Button> : <code className="text-xs">{JSON.stringify(setting.value)}</code>}
           </div>
         ))}

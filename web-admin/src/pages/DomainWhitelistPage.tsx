@@ -10,6 +10,7 @@ import { EntityList } from '@/components/EntityListPage/EntityListPage'
 import { Input } from '@/components/Input'
 import { PageListHeader } from '@/components/PageListHeader'
 import { translateApiError } from '@/i18n/apiError'
+import { toast } from '@/stores/toast'
 import { formatDateTime } from '@/utils/formatDateTime'
 
 type WhitelistRow = {
@@ -24,7 +25,6 @@ export default function DomainWhitelistPage() {
   const queryClient = useQueryClient()
   const [domain, setDomain] = useState('')
   const [note, setNote] = useState('')
-  const [message, setMessage] = useState('')
 
   const fetchPage = useCallback(
     (params: { page: number; page_size: number }) => getPage<WhitelistRow>('/v1/admin/domain-whitelist', params),
@@ -36,19 +36,19 @@ export default function DomainWhitelistPage() {
     onSuccess: async () => {
       setDomain('')
       setNote('')
-      setMessage(t('domains.whitelisted'))
       await queryClient.invalidateQueries({ queryKey: ['admin-domain-whitelist'] })
+      toast.success(t('common.createSuccess'))
     },
-    onError: (error) => setMessage(translateApiError(t, error)),
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const remove = useMutation({
     mutationFn: async (id: string) => apiClient.delete(`/v1/admin/domain-whitelist/${id}`),
     onSuccess: async () => {
-      setMessage(t('domains.whitelistRemoved'))
       await queryClient.invalidateQueries({ queryKey: ['admin-domain-whitelist'] })
+      toast.success(t('common.deleteSuccess'))
     },
-    onError: (error) => setMessage(translateApiError(t, error)),
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const columns: Column<WhitelistRow>[] = useMemo(() => [
@@ -73,7 +73,6 @@ export default function DomainWhitelistPage() {
   return (
     <section className="page-container">
       <PageListHeader
-        title={t('pages.domainWhitelist')}
         actions={(
           <Button variant="secondary" size="sm" onClick={() => void queryClient.invalidateQueries({ queryKey: ['admin-domain-whitelist'] })}>
             <RefreshCw size={16} />
@@ -85,7 +84,6 @@ export default function DomainWhitelistPage() {
         className="page-card mb-4 grid gap-3 p-4 md:grid-cols-[1fr_1fr_auto]"
         onSubmit={(event) => {
           event.preventDefault()
-          setMessage('')
           create.mutate()
         }}
       >
@@ -94,7 +92,6 @@ export default function DomainWhitelistPage() {
         <Button type="submit" loading={create.isPending}>{t('domains.add')}</Button>
       </form>
       <p className="mb-4 text-sm text-muted-foreground">{t('domains.whitelistHint')}</p>
-      {message && <p className="mb-4 text-sm text-muted-foreground" role="status">{message}</p>}
       <EntityList
         columns={columns}
         queryKey={['admin-domain-whitelist']}

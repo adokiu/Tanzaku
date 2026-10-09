@@ -28,10 +28,15 @@ pub fn admin_router() -> Router<Arc<AppState>> {
 }
 
 pub fn user_router() -> Router<Arc<AppState>> {
-    Router::new().route(
-        "/api/v1/certificates",
-        get(list_user_certificates).post(create_user_certificate),
-    )
+    Router::new()
+        .route(
+            "/api/v1/certificates",
+            get(list_user_certificates).post(create_user_certificate),
+        )
+        .route(
+            "/api/v1/certificates/{id}",
+            put(update_user_certificate).delete(delete_user_certificate),
+        )
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -41,6 +46,7 @@ struct CertificateRow {
     domains: Vec<String>,
     not_before: String,
     not_after: String,
+    issuer: String,
     source: String,
 }
 
@@ -52,11 +58,12 @@ struct AdminCertificateRow {
     domains: Vec<String>,
     not_before: String,
     not_after: String,
+    issuer: String,
     source: String,
     created_at: String,
 }
 
-const ADMIN_CERTIFICATE_SQL: &str = "SELECT c.id, c.owner_user_id, u.email AS owner_email, c.domains, c.not_before::text AS not_before, c.not_after::text AS not_after, c.source, c.created_at::text AS created_at FROM certificates c LEFT JOIN users u ON u.id = c.owner_user_id";
+const ADMIN_CERTIFICATE_SQL: &str = "SELECT c.id, c.owner_user_id, u.email AS owner_email, c.domains, c.not_before::text AS not_before, c.not_after::text AS not_after, c.issuer, c.source, c.created_at::text AS created_at FROM certificates c LEFT JOIN users u ON u.id = c.owner_user_id";
 
 async fn list_admin_certificates(
     State(state): State<Arc<AppState>>,
@@ -72,7 +79,7 @@ async fn list_admin_certificates(
         .fetch_one(&pg)
         .await
         .map_err(database_error)?;
-    let certificates = sqlx::query_as::<_, AdminCertificateRow>(&format!(
+    let mut certificates = sqlx::query_as::<_, AdminCertificateRow>(&format!(
         "{ADMIN_CERTIFICATE_SQL} ORDER BY c.created_at DESC LIMIT $1 OFFSET $2"
     ))
     .bind(page_size)
@@ -80,6 +87,7 @@ async fn list_admin_certificates(
     .fetch_all(&pg)
     .await
     .map_err(database_error)?;
+    backfill_missing_issuers(&pg, &mut certificates).await;
     Ok(Json(Page::new(certificates, total, page, page_size)))
 }
 
@@ -100,8 +108,8 @@ async fn list_user_certificates(
     .fetch_one(&pg)
     .await
     .map_err(database_error)?;
-    let certificates = sqlx::query_as::<_, CertificateRow>(
-        "SELECT id, owner_user_id, domains, not_before::text AS not_before, not_after::text AS not_after, source FROM certificates WHERE (owner_user_id = $1 OR owner_user_id IS NULL) AND not_after > now() ORDER BY not_after DESC LIMIT $2 OFFSET $3",
+    let mut certificates = sqlx::query_as::<_, CertificateRow>(
+        "SELECT id, owner_user_id, domains, not_before::text AS not_before, not_after::text AS not_after, issuer, source FROM certificates WHERE (owner_user_id = $1 OR owner_user_id IS NULL) AND not_after > now() ORDER BY not_after DESC LIMIT $2 OFFSET $3",
     )
     .bind(user.user_id)
     .bind(page_size)
@@ -109,6 +117,9 @@ async fn list_user_certificates(
     .fetch_all(&pg)
     .await
     .map_err(database_error)?;
+    for row in certificates.iter_mut() {
+        backfill_issuer_field(&pg, row.id, &mut row.issuer).await;
+    }
     Ok(Json(Page::new(certificates, total, page, page_size)))
 }
 
@@ -130,6 +141,14 @@ struct AdminCreateCertificate {
 struct AdminUpdateCertificate {
     #[serde(default)]
     owner_user_id: Option<Uuid>,
+    #[serde(default)]
+    certificate_pem: String,
+    #[serde(default)]
+    private_key_pem: String,
+}
+
+#[derive(Deserialize)]
+struct UserUpdateCertificate {
     #[serde(default)]
     certificate_pem: String,
     #[serde(default)]
@@ -176,7 +195,7 @@ async fn update_admin_certificate(
     let parsed = parse_certificate(&certificate_pem, &private_key_pem)?;
     let mut transaction = pg.begin().await.map_err(database_error)?;
     let updated = sqlx::query(
-        "UPDATE certificates SET owner_user_id = $2, domains = $3, cert_pem = $4, private_key_pem = $5, not_before = $6, not_after = $7 WHERE id = $1",
+        "UPDATE certificates SET owner_user_id = $2, domains = $3, cert_pem = $4, private_key_pem = $5, not_before = $6, not_after = $7, issuer = $8 WHERE id = $1",
     )
     .bind(id)
     .bind(owner)
@@ -185,6 +204,7 @@ async fn update_admin_certificate(
     .bind(&private_key_pem)
     .bind(parsed.not_before)
     .bind(parsed.not_after)
+    .bind(&parsed.issuer)
     .execute(&mut *transaction)
     .await
     .map_err(database_error)?;
@@ -231,6 +251,100 @@ async fn create_user_certificate(
     create_certificate(pg, actor.user_id, Some(actor.user_id), request).await
 }
 
+async fn update_user_certificate(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(request): Json<UserUpdateCertificate>,
+) -> Result<Json<CertificateRow>, (StatusCode, Json<Value>)> {
+    let (pg, actor) = state
+        .database_for(&headers, UserRole::User)
+        .await
+        .map_err(response_error)?;
+    let owned: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM certificates WHERE id = $1 AND owner_user_id = $2)",
+    )
+    .bind(id)
+    .bind(actor.user_id)
+    .fetch_one(&pg)
+    .await
+    .map_err(database_error)?;
+    if !owned {
+        return Err(response_error(unavailable(StatusCode::NOT_FOUND, "证书不存在")));
+    }
+    let material = AdminUpdateCertificate {
+        owner_user_id: Some(actor.user_id),
+        certificate_pem: request.certificate_pem,
+        private_key_pem: request.private_key_pem,
+    };
+    let (certificate_pem, private_key_pem) =
+        certificate_material_for_update(&pg, id, &material).await?;
+    let parsed = parse_certificate(&certificate_pem, &private_key_pem)?;
+    let mut transaction = pg.begin().await.map_err(database_error)?;
+    let updated = sqlx::query(
+        "UPDATE certificates SET domains = $2, cert_pem = $3, private_key_pem = $4, not_before = $5, not_after = $6, issuer = $7 WHERE id = $1 AND owner_user_id = $8",
+    )
+    .bind(id)
+    .bind(&parsed.domains)
+    .bind(&certificate_pem)
+    .bind(&private_key_pem)
+    .bind(parsed.not_before)
+    .bind(parsed.not_after)
+    .bind(&parsed.issuer)
+    .bind(actor.user_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    if updated.rows_affected() == 0 {
+        return Err(response_error(unavailable(StatusCode::NOT_FOUND, "证书不存在")));
+    }
+    write_audit(
+        &mut transaction,
+        actor.user_id,
+        "certificate.update",
+        "certificate",
+        id,
+    )
+    .await?;
+    transaction.commit().await.map_err(database_error)?;
+    let row = sqlx::query_as::<_, CertificateRow>(
+        "SELECT id, owner_user_id, domains, not_before::text AS not_before, not_after::text AS not_after, issuer, source FROM certificates WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&pg)
+    .await
+    .map_err(database_error)?;
+    crate::ws::push_node_configs_to_online_nodes(&pg).await;
+    Ok(Json(row))
+}
+
+async fn delete_user_certificate(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, (StatusCode, Json<Value>)> {
+    let (pg, actor) = state
+        .database_for(&headers, UserRole::User)
+        .await
+        .map_err(response_error)?;
+    let mut transaction = pg.begin().await.map_err(database_error)?;
+    let deleted = sqlx::query(
+        "DELETE FROM certificates WHERE id = $1 AND owner_user_id = $2",
+    )
+    .bind(id)
+    .bind(actor.user_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    if deleted.rows_affected() == 0 {
+        return Err(response_error(unavailable(StatusCode::NOT_FOUND, "证书不存在")));
+    }
+    write_audit(&mut transaction, actor.user_id, "certificate.delete", "certificate", id).await?;
+    transaction.commit().await.map_err(database_error)?;
+    crate::ws::push_node_configs_to_online_nodes(&pg).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn create_certificate(
     pg: sqlx::PgPool,
     actor_id: Uuid,
@@ -241,7 +355,7 @@ async fn create_certificate(
     let id = Uuid::new_v4();
     let mut transaction = pg.begin().await.map_err(database_error)?;
     let certificate = sqlx::query_as::<_, CertificateRow>(
-        "INSERT INTO certificates (id, owner_user_id, domains, cert_pem, private_key_pem, not_before, not_after, source) VALUES ($1,$2,$3,$4,$5,$6,$7,'manual') RETURNING id, owner_user_id, domains, not_before::text AS not_before, not_after::text AS not_after, source",
+        "INSERT INTO certificates (id, owner_user_id, domains, cert_pem, private_key_pem, not_before, not_after, issuer, source) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'manual') RETURNING id, owner_user_id, domains, not_before::text AS not_before, not_after::text AS not_after, issuer, source",
     )
     .bind(id)
     .bind(owner_user_id)
@@ -250,6 +364,7 @@ async fn create_certificate(
     .bind(&request.private_key_pem)
     .bind(parsed.not_before)
     .bind(parsed.not_after)
+    .bind(&parsed.issuer)
     .fetch_one(&mut *transaction)
     .await
     .map_err(database_error)?;
@@ -268,6 +383,7 @@ struct ParsedCertificate {
     domains: Vec<String>,
     not_before: DateTime<Utc>,
     not_after: DateTime<Utc>,
+    issuer: String,
 }
 
 fn parse_certificate(
@@ -308,7 +424,76 @@ fn parse_certificate(
         domains,
         not_before,
         not_after,
+        issuer: certificate_issuer_name(&certificate),
     })
+}
+
+fn certificate_issuer_name(certificate: &X509Certificate<'_>) -> String {
+    let issuer = certificate.issuer();
+    if let Some(org) = issuer
+        .iter_organization()
+        .find_map(|attr| attr.as_str().ok().map(str::trim).filter(|s| !s.is_empty()))
+    {
+        return org.to_owned();
+    }
+    if let Some(ou) = issuer
+        .iter_organizational_unit()
+        .find_map(|attr| attr.as_str().ok().map(str::trim).filter(|s| !s.is_empty()))
+    {
+        return ou.to_owned();
+    }
+    if let Some(cn) = issuer
+        .iter_common_name()
+        .find_map(|attr| attr.as_str().ok().map(str::trim).filter(|s| !s.is_empty()))
+    {
+        return cn.to_owned();
+    }
+    let raw = issuer.to_string();
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    trimmed.chars().take(200).collect()
+}
+
+fn issuer_from_pem(certificate_pem: &str) -> Option<String> {
+    let (_, pem) = x509_parser::pem::parse_x509_pem(certificate_pem.as_bytes()).ok()?;
+    let (rest, certificate) = X509Certificate::from_der(&pem.contents).ok()?;
+    if !rest.is_empty() {
+        return None;
+    }
+    let issuer = certificate_issuer_name(&certificate);
+    if issuer.is_empty() {
+        None
+    } else {
+        Some(issuer)
+    }
+}
+
+async fn backfill_missing_issuers(pg: &PgPool, rows: &mut [AdminCertificateRow]) {
+    for row in rows.iter_mut() {
+        backfill_issuer_field(pg, row.id, &mut row.issuer).await;
+    }
+}
+
+async fn backfill_issuer_field(pg: &PgPool, id: Uuid, issuer: &mut String) {
+    if !issuer.trim().is_empty() {
+        return;
+    }
+    let pem: Option<String> = sqlx::query_scalar("SELECT cert_pem FROM certificates WHERE id = $1")
+        .bind(id)
+        .fetch_optional(pg)
+        .await
+        .ok()
+        .flatten();
+    let Some(pem) = pem else { return };
+    let Some(parsed) = issuer_from_pem(&pem) else { return };
+    let _ = sqlx::query("UPDATE certificates SET issuer = $2 WHERE id = $1 AND issuer = ''")
+        .bind(id)
+        .bind(&parsed)
+        .execute(pg)
+        .await;
+    *issuer = parsed;
 }
 
 fn certificate_dns_names(

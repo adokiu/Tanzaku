@@ -1,0 +1,39 @@
+.full-page-loader {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+}
+
+.full-page-loader__ring {
+  position: relative;
+  width: 2.75rem;
+  height: 2.75rem;
+}
+
+.full-page-loader__ring span {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2.5px solid transparent;
+  border-top-color: hsl(var(--foreground) / 0.85);
+  animation: full-page-spin 0.85s cubic-bezier(0.5, 0.15, 0.5, 0.85) infinite;
+}
+
+.full-page-loader__ring span:nth-child(2) {
+  inset: 6px;
+  border-top-color: hsl(var(--foreground) / 0.35);
+  animation-duration: 1.15s;
+  animation-direction: reverse;
+}
+
+@keyframes full-page-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .full-page-loader__ring span {
+    animation-duration: 1.6s;
+  }
+}

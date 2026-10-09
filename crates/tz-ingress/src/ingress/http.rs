@@ -66,37 +66,57 @@ fn spawn_http_connection(
             filing: endpoint.filing.clone(),
         };
         tokio::spawn(async move {
+            use crate::http_block::FirstPacketKind;
+            use crate::http_l7::DedicatedMode;
+
             if !endpoint.allow_new_conn().await {
                 return;
             }
-            if endpoint.filing.load().enabled {
-                let mut buf = [0_u8; 8];
-                let peeked = tokio::time::timeout(
-                    std::time::Duration::from_millis(800),
-                    inbound.peek(&mut buf),
-                )
-                .await;
-                if let Ok(Ok(n)) = peeked {
-                    if crate::http_block::classify_first_packet(&buf[..n])
-                        == crate::http_block::FirstPacketKind::Tls
-                    {
-                        let Ok(acceptor) = crate::filing::block_acceptor() else {
-                            return;
-                        };
-                        let Ok(Ok(tls)) = tokio::time::timeout(
-                            std::time::Duration::from_secs(8),
-                            acceptor.accept(inbound),
-                        )
-                        .await
-                        else {
-                            return;
-                        };
-                        let _ = crate::http_l7::serve_dedicated_hyper(tls, peer, dedicated).await;
+            // 独立端口只能承载一种公网协议：开启 HTTPS 时明文请求跳转 HTTPS；
+            // 未开启时 TLS 访问只返回提示（仍需握手才能回页面）。
+            let Ok(kind) = crate::http_block::peek_first_packet_kind(&inbound).await else {
+                return;
+            };
+            if kind != FirstPacketKind::Tls {
+                let mode = if endpoint.https_enabled {
+                    DedicatedMode::RedirectHttps
+                } else {
+                    DedicatedMode::Proxy("http")
+                };
+                let _ = crate::http_l7::serve_dedicated_hyper(inbound, peer, dedicated, mode).await;
+                return;
+            }
+            let Ok(acceptor) =
+                crate::http_block::dedicated_tls_acceptor(endpoint.l4_block_cert_resolver.clone())
+            else {
+                return;
+            };
+            let tls = {
+                let _permit = match endpoint.guard.acquire_tls_handshake() {
+                    Ok(permit) => permit,
+                    Err(verdict) => {
+                        endpoint
+                            .guard
+                            .record_if_denied(&verdict, peer.ip(), Some(endpoint.tunnel_id));
                         return;
                     }
+                };
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(8),
+                    acceptor.accept(inbound),
+                )
+                .await
+                {
+                    Ok(Ok(tls)) => tls,
+                    _ => return,
                 }
-            }
-            let _ = crate::http_l7::serve_dedicated_hyper(inbound, peer, dedicated).await;
+            };
+            let mode = if endpoint.https_enabled {
+                DedicatedMode::Proxy("https")
+            } else {
+                DedicatedMode::HttpOnlyNotice
+            };
+            let _ = crate::http_l7::serve_dedicated_hyper(tls, peer, dedicated, mode).await;
         });
         return;
     }

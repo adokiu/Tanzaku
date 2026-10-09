@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next'
 import apiClient from '@/api/client'
 import { getPage, getPageItems } from '@/api/page'
 import { Button } from '@/components/Button'
+import { CellTooltip } from '@/components/CellTooltip/CellTooltip'
 import { type Column } from '@/components/DataTable'
 import { EntityList } from '@/components/EntityListPage/EntityListPage'
 import { EntityIdCell, ENTITY_LIST_COL_ID } from '@/components/EntityListLeadingCells'
@@ -21,6 +22,7 @@ import {
   UserTrafficUsedCell,
 } from '@/components/UserListCells'
 import { translateApiError } from '@/i18n/apiError'
+import { toast } from '@/stores/toast'
 import { translateField } from '@/i18n/fieldLabel'
 import { formatDateTime } from '@/utils/formatDateTime'
 import {
@@ -153,7 +155,6 @@ export default function UsersPage() {
   const [balanceYuan, setBalanceYuan] = useState('0.00')
   const [overrides, setOverrides] = useState<SubscriptionOverrides>(EMPTY_OVERRIDES)
   const [initialOverrides, setInitialOverrides] = useState<SubscriptionOverrides>(EMPTY_OVERRIDES)
-  const [formError, setFormError] = useState('')
   const canEditOverrides = Boolean(editingId && initialPlanId && planId === initialPlanId)
   const planChanged = Boolean(editingId && initialPlanId && planId && planId !== initialPlanId)
   const updateOverride = <K extends keyof SubscriptionOverrides>(key: K, value: SubscriptionOverrides[K]) =>
@@ -198,7 +199,6 @@ export default function UsersPage() {
     setBalanceYuan('0.00')
     setOverrides(EMPTY_OVERRIDES)
     setInitialOverrides(EMPTY_OVERRIDES)
-    setFormError('')
   }, [])
 
   function balanceCentsFromForm(): number | null {
@@ -230,8 +230,9 @@ export default function UsersPage() {
       setEditingId(null)
       resetCreateForm()
       await invalidate()
+      toast.success(t('common.createSuccess'))
     },
-    onError: (error) => setFormError(translateApiError(t, error)),
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const update = useMutation({
@@ -275,24 +276,31 @@ export default function UsersPage() {
       setEditingId(null)
       resetCreateForm()
       await invalidate()
+      toast.success(t('common.saveSuccess'))
     },
-    onError: (error) => setFormError(translateApiError(t, error)),
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const setStatus = useMutation({
     mutationFn: async ({ id, status }: { id: string; status: 'active' | 'disabled' }) => {
       await apiClient.patch(`/v1/admin/users/${id}/status`, { status })
     },
-    onSuccess: invalidate,
-    onError: (error) => window.alert(translateApiError(t, error)),
+    onSuccess: async () => {
+      await invalidate()
+      toast.success(t('common.operationSuccess'))
+    },
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const remove = useMutation({
     mutationFn: async (id: string) => {
       await apiClient.delete(`/v1/admin/users/${id}`)
     },
-    onSuccess: invalidate,
-    onError: (error) => window.alert(translateApiError(t, error)),
+    onSuccess: async () => {
+      await invalidate()
+      toast.success(t('common.deleteSuccess'))
+    },
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const openCreate = useCallback(() => {
@@ -316,7 +324,6 @@ export default function UsersPage() {
     const rowOverrides = overridesFromUser(row)
     setOverrides(rowOverrides)
     setInitialOverrides(rowOverrides)
-    setFormError('')
     setSidebarOpen(true)
   }, [])
 
@@ -333,9 +340,9 @@ export default function UsersPage() {
         key: 'email',
         title: translateField(t, 'email'),
         render: (row) => (
-          <span className="entity-list-cell entity-list-cell--name data-table-cell" title={row.email}>
+          <CellTooltip tip={row.email} className="entity-list-cell entity-list-cell--name data-table-cell">
             {row.email}
-          </span>
+          </CellTooltip>
         ),
       },
       {
@@ -444,19 +451,18 @@ export default function UsersPage() {
   }, [openEdit, remove.mutate, setStatus.mutate, t])
 
   function submitSidebar() {
-    setFormError('')
     if (!email.trim()) {
-      setFormError(t('users.emailRequired'))
+      toast.error(t('users.emailRequired'))
       return
     }
     if (balanceCentsFromForm() == null) {
-      setFormError(t('users.balanceInvalid'))
+      toast.error(t('users.balanceInvalid'))
       return
     }
     if (!editingId) {
       const passwordError = validatePassword(password)
       if (passwordError) {
-        setFormError(t(passwordError))
+        toast.error(t(passwordError))
         return
       }
       create.mutate()
@@ -465,12 +471,12 @@ export default function UsersPage() {
     if (password.trim()) {
       const passwordError = validatePassword(password)
       if (passwordError) {
-        setFormError(t(passwordError))
+        toast.error(t(passwordError))
         return
       }
     }
     if (canEditOverrides && overridesPayload(overrides, initialOverrides) == null) {
-      setFormError(t('users.overridesInvalid'))
+      toast.error(t('users.overridesInvalid'))
       return
     }
     update.mutate()
@@ -481,7 +487,6 @@ export default function UsersPage() {
   return (
     <section className="page-container page-container--entity-list">
       <PageListHeader
-        title={t('pages.users')}
         actions={(
           <>
             <Button size="sm" onClick={openCreate}>
@@ -514,7 +519,6 @@ export default function UsersPage() {
         )}
       >
         <FormStack>
-          {formError ? <p className="sidebar-form-error" role="alert">{formError}</p> : null}
           <FormField label={translateField(t, 'user_email')} required>
             <Input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required />
           </FormField>

@@ -1,0 +1,10 @@
+# tanzaku-server 配置示例
+# 复制为可执行文件同级目录下的 server.toml，或通过 -c / TANZAKU_CONFIG 指定。
+#
+# 路径优先级：-c/--config > TANZAKU_CONFIG > <exe>/server.toml
+# 字段优先级：--board/--token > TANZAKU_BOARD/TANZAKU_TOKEN > 本文件
+#
+# board 可写 http(s)://host:port 或 ws(s)://host:port/ws；缺 /ws 时会自动补全。
+
+board = "https://board.example.com:9000"
+token = "paste-node-token-here"

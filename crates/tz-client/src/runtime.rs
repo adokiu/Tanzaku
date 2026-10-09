@@ -436,20 +436,30 @@ async fn run_stream_relay_loop(
             let upstream = match connect_upstream(&tunnel).await {
                 Ok(upstream) => upstream,
                 Err(error) => {
+                    let backend_tls_error = error.chain().any(|cause| cause.is::<rustls::Error>());
+                    tracing::warn!(
+                        %tunnel_id,
+                        target = %crate::upstream::upstream_target(&tunnel),
+                        error = %format!("{error:#}"),
+                        backend_tls_error,
+                        "upstream connection failed"
+                    );
                     report_tunnel_state(
                         &agent,
                         &tunnel,
                         false,
-                        false,
+                        backend_tls_error,
                         true,
-                        Some(error.to_string()),
+                        Some(format!("{error:#}")),
                     )
                     .await;
                     let _ = header;
                     return;
                 }
             };
-            let _ = relay_connection(carrier, &tunnel, upstream, meter).await;
+            if let Err(error) = relay_connection(carrier, &tunnel, upstream, meter).await {
+                tracing::warn!(%tunnel_id, error = %format!("{error:#}"), "upstream relay failed");
+            }
             let _ = header;
         });
     }

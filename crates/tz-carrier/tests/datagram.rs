@@ -23,6 +23,7 @@ fn node_config(tunnel_id: Uuid, client_id: Uuid, carrier: &str) -> tz_proto::Nod
         https_shared_port: 0,
         guard_policy: serde_json::Value::Null,
         cn_http_filing: false,
+        cn_residency: false,
         domain_whitelist: Vec::new(),
         trusted_proxies: Vec::new(),
         board_ca_pem: String::new(),

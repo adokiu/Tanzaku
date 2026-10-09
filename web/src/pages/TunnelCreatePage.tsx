@@ -224,8 +224,8 @@ export default function TunnelCreatePage() {
       <form className="page-card grid gap-6 p-6" onSubmit={submit}>
         <Field label="隧道名称"><input className="apple-input w-full" value={form.name} onChange={(event) => update('name', event.target.value)} maxLength={100} required /></Field>
         <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Server 节点"><select className="apple-input w-full" value={form.node_id} onChange={(event) => update('node_id', event.target.value)} required><option value="">选择在线节点</option>{nodes.data?.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.region} · {item.public_host}</option>)}</select></Field>
-          <Field label="我的 Client"><select className="apple-input w-full" value={form.client_id} onChange={(event) => update('client_id', event.target.value)} required><option value="">选择 Client</option>{clients.data?.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.online ? '在线' : '离线'}</option>)}</select></Field>
+          <Field label="Server 节点"><select className="apple-input w-full" value={form.node_id} onChange={(event) => update('node_id', event.target.value)} required><option value="">选择在线节点</option>{nodes.data?.map((item) => <option key={item.id} value={item.id}>{item.name} {item.region} {item.public_host}</option>)}</select></Field>
+          <Field label="我的 Client"><select className="apple-input w-full" value={form.client_id} onChange={(event) => update('client_id', event.target.value)} required><option value="">选择 Client</option>{clients.data?.map((item) => <option key={item.id} value={item.id}>{item.name} {item.online ? '在线' : '离线'}</option>)}</select></Field>
           <Field label="Carrier 协议"><select className="apple-input w-full" value={form.carrier} onChange={(event) => update('carrier', event.target.value)} required><option value="">选择 Carrier</option>{carriers.map((carrier) => <option key={carrier} value={carrier}>{carrier.toUpperCase()}</option>)}</select></Field>
           <Field label="上层协议"><select className="apple-input w-full" value={form.protocol} onChange={(event) => update('protocol', event.target.value)} required><option value="">选择协议</option>{protocols.map((item) => <option key={item} value={item}>{item.toUpperCase()}</option>)}</select></Field>
         </div>
@@ -236,7 +236,7 @@ export default function TunnelCreatePage() {
         </section>}
         {isHttp ? <>
           <div className="grid gap-4 md:grid-cols-2">
-            <Field label="HTTP 入口"><select className="apple-input w-full" value={form.http_access} onChange={(event) => update('http_access', event.target.value as TunnelForm['http_access'])}><option value="shared">共享入口（按域名） · {node?.http_shared_port}/{node?.https_shared_port}</option><option value="dedicated">独立端口</option></select></Field>
+            <Field label="HTTP 入口"><select className="apple-input w-full" value={form.http_access} onChange={(event) => update('http_access', event.target.value as TunnelForm['http_access'])}><option value="shared">共享入口（按域名） {node?.http_shared_port}/{node?.https_shared_port}</option><option value="dedicated">独立端口</option></select></Field>
             <Field label="转发目标 URL"><input className="apple-input w-full" type="url" placeholder="http://" value={form.target_url} onChange={(event) => update('target_url', event.target.value)} required /></Field>
           </div>
           <Field label="域名（多个域名以逗号或空格分隔）"><textarea className="apple-input w-full min-h-20" value={form.domains} onChange={(event) => update('domains', event.target.value)} placeholder={form.http_access === 'shared' ? 'service.example.com' : 'service.example.com 或 10.0.0.8'} required={form.http_access === 'shared' || form.https_enabled} /><span className="text-xs text-muted-foreground">{form.http_access === 'shared' ? '共享入口只能填写域名，不能填写 IP。' : '独立端口可以填写域名或 IP。'}</span></Field>
@@ -246,7 +246,7 @@ export default function TunnelCreatePage() {
           </div>
           {form.https_enabled && <div className="grid gap-4 md:grid-cols-2">
             <div className="grid gap-3">
-              <Field label="HTTPS 证书"><select className="apple-input w-full" value={form.cert_id} onChange={(event) => update('cert_id', event.target.value)} required><option value="">选择有效证书</option>{certificates.data?.map((certificate) => <option key={certificate.id} value={certificate.id}>{certificate.domains.join(', ')} · {certificate.not_after}</option>)}</select></Field>
+              <Field label="HTTPS 证书"><select className="apple-input w-full" value={form.cert_id} onChange={(event) => update('cert_id', event.target.value)} required><option value="">选择有效证书</option>{certificates.data?.map((certificate) => <option key={certificate.id} value={certificate.id}>{certificate.domains.join(', ')} {certificate.not_after}</option>)}</select></Field>
               <div className="grid gap-2 sm:grid-cols-2">
                 <Field label="上传证书链 PEM"><input className="apple-input w-full" type="file" accept=".pem,.crt,.cer" onChange={(event) => setCertificateFile(event.target.files?.[0] ?? null)} /></Field>
                 <Field label="上传私钥 PEM"><input className="apple-input w-full" type="file" accept=".pem,.key" onChange={(event) => setPrivateKeyFile(event.target.files?.[0] ?? null)} /></Field>

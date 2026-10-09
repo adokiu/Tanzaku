@@ -1,0 +1,17 @@
+# cross 交叉编译配置（GitHub Actions release 使用）。
+# aws-lc-sys 在没有预生成绑定的目标上需要 bindgen + libclang。
+[build]
+pre-build = [
+  "apt-get update && apt-get install -y --no-install-recommends clang libclang-dev cmake curl xz-utils ca-certificates",
+  "curl -fsSL https://github.com/rust-lang/rust-bindgen/releases/download/v0.72.0/bindgen-cli-x86_64-unknown-linux-gnu.tar.xz | tar -xJ --strip-components=1 -C /usr/local/bin bindgen-cli-x86_64-unknown-linux-gnu/bindgen || true",
+]
+
+[build.env]
+passthrough = ["RUSTFLAGS", "AWS_LC_SYS_EXTERNAL_BINDGEN"]
+
+# mips 系列是 Rust tier 3 目标，没有预编译 std，需要 nightly + build-std。
+[target.mips-unknown-linux-musl]
+build-std = true
+
+[target.mipsel-unknown-linux-musl]
+build-std = true

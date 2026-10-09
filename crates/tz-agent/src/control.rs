@@ -1,9 +1,10 @@
+use portable_atomic::AtomicU64;
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
 use std::{
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::Ordering,
         Arc,
     },
     time::Duration,
@@ -49,7 +50,7 @@ pub struct NodeHandle {
     pub config: Arc<ArcSwap<NodeConfig>>,
     pub identity: Arc<ArcSwap<Option<IdentityMaterial>>>,
     events: Arc<Mutex<Option<mpsc::Sender<ControlOp>>>>,
-    pub stats_committed_seq: Arc<std::sync::atomic::AtomicU64>,
+    pub stats_committed_seq: Arc<portable_atomic::AtomicU64>,
     pub running_tunnels: Arc<DashMap<uuid::Uuid, i64>>,
 }
 
@@ -679,6 +680,7 @@ fn empty_node_config() -> NodeConfig {
         https_shared_port: 443,
         guard_policy: serde_json::json!({}),
         cn_http_filing: false,
+        cn_residency: false,
         domain_whitelist: vec![],
         trusted_proxies: vec![],
         board_ca_pem: String::new(),

@@ -1,0 +1,131 @@
+.toast-host {
+  position: fixed;
+  z-index: 12000;
+  top: 1rem;
+  right: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  width: min(100% - 2rem, 380px);
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: 0.65rem;
+  padding: 0.85rem 0.9rem;
+  border-radius: 0.85rem;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.5) inset,
+    0 16px 40px rgba(20, 24, 32, 0.14);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  animation: toast-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+  color: #141820;
+}
+
+.dark .toast {
+  background: rgba(22, 24, 30, 0.94);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 16px 40px rgba(0, 0, 0, 0.45);
+  color: #f2f4f7;
+}
+
+.toast__icon {
+  margin-top: 0.1rem;
+  flex-shrink: 0;
+}
+
+.toast__message {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.toast__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin: -0.15rem -0.2rem 0 0;
+  border: none;
+  border-radius: 0.45rem;
+  background: transparent;
+  color: inherit;
+  opacity: 0.45;
+  cursor: pointer;
+}
+
+.toast__close:hover {
+  opacity: 0.9;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.dark .toast__close:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.toast--success {
+  border-color: rgba(31, 107, 90, 0.22);
+}
+
+.toast--success .toast__icon {
+  color: #1f6b5a;
+}
+
+.toast--error {
+  border-color: rgba(192, 57, 43, 0.25);
+}
+
+.toast--error .toast__icon {
+  color: #c0392b;
+}
+
+.toast--info {
+  border-color: rgba(52, 78, 120, 0.22);
+}
+
+.toast--info .toast__icon {
+  color: #3d5a80;
+}
+
+.dark .toast--success .toast__icon {
+  color: #3d9b86;
+}
+
+.dark .toast--error .toast__icon {
+  color: #ff8a80;
+}
+
+.dark .toast--info .toast__icon {
+  color: #8aa4c8;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (max-width: 640px) {
+  .toast-host {
+    top: auto;
+    bottom: 1rem;
+    right: 0.75rem;
+    left: 0.75rem;
+    width: auto;
+  }
+}

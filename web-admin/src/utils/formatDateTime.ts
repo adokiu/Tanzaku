@@ -1,3 +1,18 @@
+/** 将秒数格式化为可读持续时间（如 `45s` / `3m 12s` / `1h 5m`）。 */
+export function formatDurationSecs(secs: unknown): string {
+  const n = typeof secs === 'number' ? secs : Number(secs)
+  if (!Number.isFinite(n) || n < 0) return '—'
+  const total = Math.floor(n)
+  if (total < 1) return '<1s'
+  if (total < 60) return `${total}s`
+  const minutes = Math.floor(total / 60)
+  const seconds = total % 60
+  if (minutes < 60) return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  const remainMinutes = minutes % 60
+  return remainMinutes > 0 ? `${hours}h ${remainMinutes}m` : `${hours}h`
+}
+
 /** 人类可读：2026/10/7 18:53:36（本地时区，月/日不补零，时分秒补零） */
 export function formatDateTime(value: unknown): string {
   if (value === null || value === undefined) return ''
@@ -8,6 +23,24 @@ export function formatDateTime(value: unknown): string {
 
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+/** 仅日期：2026/10/07（本地时区，月日补零） */
+export function formatDateYmd(value: unknown): string {
+  const date = parseToDate(value)
+  if (!date) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())}`
+}
+
+/** 距本地「今天」还有多少整天（按日期）；当天为 0，已过期为负；无效为 null */
+export function daysUntilDate(value: unknown): number | null {
+  const date = parseToDate(value)
+  if (!date) return null
+  const now = new Date()
+  const expiryDay = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate())
+  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate())
+  return Math.round((expiryDay - today) / 86_400_000)
 }
 
 export function isDateTimeFieldKey(key: string): boolean {

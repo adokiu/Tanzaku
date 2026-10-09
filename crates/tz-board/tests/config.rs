@@ -5,10 +5,9 @@ fn default_listener_ports_are_separated() {
     let config = BoardConfig::default();
     assert_eq!(config.listen.admin, "0.0.0.0:9000");
     assert_eq!(config.listen.user, "0.0.0.0:9001");
-    assert_eq!(config.listen.node, "0.0.0.0:9002");
-    assert_eq!(config.listen.agent, "0.0.0.0:9003");
     assert!(config.postgres.is_none());
     assert!(config.redis.is_none());
+    assert!(config.trusted_proxies.iter().any(|cidr| cidr == "127.0.0.0/8"));
 }
 
 #[test]

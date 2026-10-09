@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next'
 import apiClient from '@/api/client'
 import { getPage, getPageItems } from '@/api/page'
 import { Button } from '@/components/Button'
+import { CellTooltip } from '@/components/CellTooltip/CellTooltip'
 import { type Column } from '@/components/DataTable'
 import { EntityList } from '@/components/EntityListPage/EntityListPage'
 import { FormField, FormStack } from '@/components/FormField'
@@ -13,7 +14,9 @@ import { Input } from '@/components/Input'
 import { PageListHeader } from '@/components/PageListHeader'
 import { Select } from '@/components/Select/Select'
 import { translateApiError } from '@/i18n/apiError'
+import { toast } from '@/stores/toast'
 import { translateField } from '@/i18n/fieldLabel'
+import { balanceYuanFromCents } from '@/utils/formatMoney'
 import {
   bytesToTrafficQuotaDisplay,
   formatTrafficQuotaLabel,
@@ -37,6 +40,14 @@ type Plan = {
   allowed_protocols: string[]
   traffic_count_mode: string
   enabled: boolean
+  price_month_cents: number | null
+  price_quarter_cents: number | null
+  price_half_year_cents: number | null
+  price_year_cents: number | null
+  price_two_year_cents: number | null
+  price_three_year_cents: number | null
+  price_traffic_pack_cents: number | null
+  price_reset_pack_cents: number | null
   node_group_ids: string[]
   node_group_names: string[]
 }
@@ -53,6 +64,15 @@ type PlanForm = {
   traffic_quota_unit: TrafficQuotaUnit
   traffic_period: string
   traffic_count_mode: string
+  price_base: string
+  price_month: string
+  price_quarter: string
+  price_half_year: string
+  price_year: string
+  price_two_year: string
+  price_three_year: string
+  price_traffic_pack: string
+  price_reset_pack: string
 }
 
 const initialForm: PlanForm = {
@@ -65,13 +85,84 @@ const initialForm: PlanForm = {
   allow_custom_port: false,
   traffic_quota_value: '',
   traffic_quota_unit: 'GB',
-  traffic_period: 'month',
+  traffic_period: 'system',
   traffic_count_mode: 'sum',
+  price_base: '',
+  price_month: '',
+  price_quarter: '',
+  price_half_year: '',
+  price_year: '',
+  price_two_year: '',
+  price_three_year: '',
+  price_traffic_pack: '',
+  price_reset_pack: '',
 }
 
-const periods = ['day', 'week', 'month', 'quarter', 'year', 'lifetime'] as const
+const periods = ['system', 'month_first', 'month_purchase', 'never', 'year_first', 'year_purchase'] as const
 const trafficUnits: TrafficQuotaUnit[] = ['MB', 'GB', 'TB', 'PB', 'unlimited']
 const countModes = ['sum', 'inbound', 'outbound', 'max'] as const
+/** 基础价（月付单价）仅前端用；按月数倍率预填各周期，仍可改。 */
+const CYCLE_PRICE_FIELDS = [
+  ['price_month', 'month', 1],
+  ['price_quarter', 'quarter', 3],
+  ['price_half_year', 'half_year', 6],
+  ['price_year', 'year', 12],
+  ['price_two_year', 'two_year', 24],
+  ['price_three_year', 'three_year', 36],
+] as const
+const ADDON_PRICE_FIELDS = [
+  ['price_traffic_pack', 'traffic_pack'],
+  ['price_reset_pack', 'reset_pack'],
+] as const
+
+function yuanFromMonths(baseYuan: number, months: number) {
+  return balanceYuanFromCents(Math.round(baseYuan * months * 100))
+}
+
+function applyBasePrice(baseRaw: string): Pick<
+  PlanForm,
+  'price_base' | 'price_month' | 'price_quarter' | 'price_half_year' | 'price_year' | 'price_two_year' | 'price_three_year'
+> {
+  const trimmed = baseRaw.trim()
+  if (!trimmed) {
+    return {
+      price_base: baseRaw,
+      price_month: '',
+      price_quarter: '',
+      price_half_year: '',
+      price_year: '',
+      price_two_year: '',
+      price_three_year: '',
+    }
+  }
+  const yuan = Number(trimmed)
+  if (!Number.isFinite(yuan) || yuan < 0) {
+    return { price_base: baseRaw, price_month: '', price_quarter: '', price_half_year: '', price_year: '', price_two_year: '', price_three_year: '' }
+  }
+  return {
+    price_base: baseRaw,
+    price_month: yuanFromMonths(yuan, 1),
+    price_quarter: yuanFromMonths(yuan, 3),
+    price_half_year: yuanFromMonths(yuan, 6),
+    price_year: yuanFromMonths(yuan, 12),
+    price_two_year: yuanFromMonths(yuan, 24),
+    price_three_year: yuanFromMonths(yuan, 36),
+  }
+}
+
+const LEGACY_RESET: Record<string, string> = {
+  day: 'month_purchase',
+  week: 'month_purchase',
+  month: 'month_purchase',
+  quarter: 'month_purchase',
+  year: 'year_first',
+  lifetime: 'never',
+}
+
+function normalizeResetMode(value: string) {
+  if ((periods as readonly string[]).includes(value)) return value
+  return LEGACY_RESET[value] ?? 'system'
+}
 
 function planToForm(plan: Plan): PlanForm {
   const traffic = bytesToTrafficQuotaDisplay(plan.traffic_quota_bytes)
@@ -85,9 +176,33 @@ function planToForm(plan: Plan): PlanForm {
     allow_custom_port: plan.allow_custom_port,
     traffic_quota_value: traffic.value,
     traffic_quota_unit: traffic.unit,
-    traffic_period: plan.traffic_period,
+    traffic_period: normalizeResetMode(plan.traffic_period),
     traffic_count_mode: plan.traffic_count_mode || 'sum',
+    // 基础价不落库：编辑时用月付回填，方便再按倍率改
+    price_base: yuanFromCents(plan.price_month_cents),
+    price_month: yuanFromCents(plan.price_month_cents),
+    price_quarter: yuanFromCents(plan.price_quarter_cents),
+    price_half_year: yuanFromCents(plan.price_half_year_cents),
+    price_year: yuanFromCents(plan.price_year_cents),
+    price_two_year: yuanFromCents(plan.price_two_year_cents),
+    price_three_year: yuanFromCents(plan.price_three_year_cents),
+    price_traffic_pack: yuanFromCents(plan.price_traffic_pack_cents),
+    price_reset_pack: yuanFromCents(plan.price_reset_pack_cents),
   }
+}
+
+function yuanFromCents(cents: number | null | undefined) {
+  return cents == null ? '' : balanceYuanFromCents(cents)
+}
+
+function parseOptionalYuan(value: string): number | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const yuan = Number(trimmed)
+  if (!Number.isFinite(yuan) || yuan < 0) {
+    throw new Error('invalid_price')
+  }
+  return Math.round(yuan * 100)
 }
 
 function buildPlanPayload(
@@ -112,6 +227,14 @@ function buildPlanPayload(
     allowed_protocols: allowedProtocols,
     traffic_count_mode: form.traffic_count_mode,
     node_group_ids: nodeGroupIds,
+    price_month_cents: parseOptionalYuan(form.price_month),
+    price_quarter_cents: parseOptionalYuan(form.price_quarter),
+    price_half_year_cents: parseOptionalYuan(form.price_half_year),
+    price_year_cents: parseOptionalYuan(form.price_year),
+    price_two_year_cents: parseOptionalYuan(form.price_two_year),
+    price_three_year_cents: parseOptionalYuan(form.price_three_year),
+    price_traffic_pack_cents: parseOptionalYuan(form.price_traffic_pack),
+    price_reset_pack_cents: parseOptionalYuan(form.price_reset_pack),
   }
 }
 
@@ -124,8 +247,6 @@ export default function PlansPage() {
   const [allowedProtocols, setAllowedProtocols] = useState<string[]>(['tcp'])
   const [nodeGroupIds, setNodeGroupIds] = useState<string[]>([])
   const [groupPick, setGroupPick] = useState<string>('')
-  const [formError, setFormError] = useState('')
-
   const catalog = useQuery({
     queryKey: ['admin-dataplane'],
     queryFn: async () => (await apiClient.get('/v1/admin/dataplane')).data as { protocols: string[] },
@@ -177,10 +298,10 @@ export default function PlansPage() {
       setAllowedProtocols(['tcp'])
       setNodeGroupIds([])
       setGroupPick('')
-      setFormError('')
       await invalidate()
+      toast.success(t('common.createSuccess'))
     },
-    onError: (error) => setFormError(translateApiError(t, error)),
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const update = useMutation({
@@ -196,45 +317,52 @@ export default function PlansPage() {
       setAllowedProtocols(['tcp'])
       setNodeGroupIds([])
       setGroupPick('')
-      setFormError('')
       await invalidate()
+      toast.success(t('common.saveSuccess'))
     },
-    onError: (error) => setFormError(translateApiError(t, error)),
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const setEnabled = useMutation({
     mutationFn: async ({ id, enabled }: { id: string; enabled: boolean }) => {
       await apiClient.patch(`/v1/admin/plans/${id}/enabled`, { enabled })
     },
-    onSuccess: invalidate,
-    onError: (error) => window.alert(translateApiError(t, error)),
+    onSuccess: async () => {
+      await invalidate()
+      toast.success(t('common.operationSuccess'))
+    },
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const remove = useMutation({
     mutationFn: async (id: string) => {
       await apiClient.delete(`/v1/admin/plans/${id}`)
     },
-    onSuccess: invalidate,
-    onError: (error) => window.alert(translateApiError(t, error)),
+    onSuccess: async () => {
+      await invalidate()
+      toast.success(t('common.deleteSuccess'))
+    },
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   function updateField<K extends keyof PlanForm>(key: K, value: PlanForm[K]) {
+    if (key === 'price_base' && typeof value === 'string') {
+      setForm((current) => ({ ...current, ...applyBasePrice(value) }))
+      return
+    }
     setForm((current) => ({ ...current, [key]: value }))
-    setFormError('')
   }
 
   function toggleProtocol(value: string) {
     setAllowedProtocols((current) =>
       current.includes(value) ? current.filter((item) => item !== value) : [...current, value],
     )
-    setFormError('')
   }
 
   function addNodeGroup(id: string) {
     if (!id || nodeGroupIds.includes(id)) return
     setNodeGroupIds((current) => [...current, id])
     setGroupPick('')
-    setFormError('')
   }
 
   function removeNodeGroup(id: string) {
@@ -247,7 +375,6 @@ export default function PlansPage() {
     setAllowedProtocols(catalog.data?.protocols ?? [])
     setNodeGroupIds([])
     setGroupPick('')
-    setFormError('')
     setSidebarOpen(true)
   }, [catalog.data?.protocols])
 
@@ -257,28 +384,26 @@ export default function PlansPage() {
     setAllowedProtocols(row.allowed_protocols?.length ? [...row.allowed_protocols] : ['tcp'])
     setNodeGroupIds(row.node_group_ids?.length ? [...row.node_group_ids] : [])
     setGroupPick('')
-    setFormError('')
     setSidebarOpen(true)
   }, [])
 
   function submitForm() {
-    setFormError('')
     if (!form.name.trim()) {
-      setFormError(t('plans.nameRequired'))
+      toast.error(t('plans.nameRequired'))
       return
     }
     if (nodeGroupIds.length === 0) {
-      setFormError(t('messages.nodeGroupRequired'))
+      toast.error(t('messages.nodeGroupRequired'))
       return
     }
     if (allowedProtocols.length === 0) {
-      setFormError(t('plans.protocolRequired'))
+      toast.error(t('plans.protocolRequired'))
       return
     }
     try {
       buildPlanPayload(form, allowedProtocols, nodeGroupIds)
-    } catch {
-      setFormError(t('plans.trafficQuotaInvalid'))
+    } catch (error) {
+      toast.error(error instanceof Error && error.message === 'invalid_price' ? t('plans.priceInvalid') : t('plans.trafficQuotaInvalid'))
       return
     }
     if (editingId) {
@@ -298,9 +423,9 @@ export default function PlansPage() {
         title: translateField(t, 'plan_name'),
         width: 160,
         render: (row) => (
-          <span className="data-table-cell" title={row.description?.trim() || undefined}>
+          <CellTooltip tip={row.description?.trim() || undefined} className="data-table-cell">
             {row.name}
-          </span>
+          </CellTooltip>
         ),
       },
       {
@@ -308,11 +433,11 @@ export default function PlansPage() {
         title: t('plans.serverGroups'),
         width: 140,
         render: (row) => (
-          <span className="data-table-cell" title={(row.node_group_names ?? []).join(', ')}>
+          <CellTooltip tip={(row.node_group_names ?? []).join(', ') || undefined} className="data-table-cell">
             {(row.node_group_names ?? []).length
               ? row.node_group_names.join('、')
               : '—'}
-          </span>
+          </CellTooltip>
         ),
       },
       {
@@ -328,9 +453,9 @@ export default function PlansPage() {
       {
         key: 'traffic_period',
         title: t('plans.billingCycleColumn'),
-        width: 88,
+        width: 140,
         render: (row) => (
-          <span className="data-table-cell">{t(`enums.billingPeriod.${row.traffic_period}`)}</span>
+          <span className="data-table-cell">{t(`enums.billingPeriod.${normalizeResetMode(row.traffic_period)}`)}</span>
         ),
       },
       {
@@ -393,7 +518,6 @@ export default function PlansPage() {
   return (
     <section className="page-container page-container--entity-list">
       <PageListHeader
-        title={t('pages.plans')}
         actions={(
           <>
             <Button
@@ -422,7 +546,7 @@ export default function PlansPage() {
         open={sidebarOpen}
         title={editingId ? t('forms.editPlan') : t('forms.createPlan')}
         onClose={() => setSidebarOpen(false)}
-        initialWidth={600}
+        initialWidth={720}
         footer={(
           <>
             <Button variant="ghost" onClick={() => setSidebarOpen(false)}>{t('common.cancel')}</Button>
@@ -431,7 +555,6 @@ export default function PlansPage() {
         )}
       >
         <FormStack>
-          {formError ? <p className="sidebar-form-error" role="alert">{formError}</p> : null}
           <FormField label={t('forms.planName')} required>
             <Input
               value={form.name}
@@ -441,6 +564,64 @@ export default function PlansPage() {
               required
             />
           </FormField>
+          <div className="plans-price-block">
+            <FormField label={t('plans.priceSection')} hint={t('plans.priceHint')}>
+              <label className="plans-price-field plans-price-field--base">
+                <span>{t('plans.price.base')}</span>
+                <span className="plans-price-input">
+                  <span className="plans-price-yen">¥</span>
+                  <Input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={form.price_base}
+                    onChange={(event) => updateField('price_base', event.target.value)}
+                    placeholder={t('plans.priceBasePlaceholder')}
+                  />
+                </span>
+                <em>{t('plans.priceBaseHint')}</em>
+              </label>
+              <div className="plans-price-grid">
+                {CYCLE_PRICE_FIELDS.map(([field, key]) => (
+                  <label key={field} className="plans-price-field">
+                    <span>{t(`plans.price.${key}`)}</span>
+                    <span className="plans-price-input">
+                      <span className="plans-price-yen">¥</span>
+                      <Input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        value={form[field]}
+                        onChange={(event) => updateField(field, event.target.value)}
+                        placeholder={t('plans.pricePlaceholder')}
+                      />
+                    </span>
+                  </label>
+                ))}
+                {ADDON_PRICE_FIELDS.map(([field, key]) => (
+                  <label key={field} className="plans-price-field">
+                    <span>{t(`plans.price.${key}`)}</span>
+                    <span className="plans-price-input">
+                      <span className="plans-price-yen">¥</span>
+                      <Input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        value={form[field]}
+                        onChange={(event) => updateField(field, event.target.value)}
+                        placeholder={t('plans.pricePlaceholder')}
+                      />
+                    </span>
+                    {key === 'traffic_pack' ? (
+                      <em>{t('plans.priceTrafficPackHint')}</em>
+                    ) : (
+                      <em>{t('plans.priceResetPackHint')}</em>
+                    )}
+                  </label>
+                ))}
+              </div>
+            </FormField>
+          </div>
           <FormField label={t('plans.serverGroups')} required hint={t('plans.serverGroupsHint')}>
             <Select
               value={groupPick || undefined}
@@ -463,7 +644,7 @@ export default function PlansPage() {
           </FormField>
           <FormField label={t('plans.billingCycleLabel')} required hint={t('plans.billingCycleHint')}>
             <Select
-              value={form.traffic_period}
+              value={normalizeResetMode(form.traffic_period)}
               options={periods.map((period) => ({
                 label: t(`enums.billingPeriod.${period}`),
                 value: period,

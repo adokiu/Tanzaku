@@ -5,20 +5,22 @@ import { useTranslation } from 'react-i18next'
 import apiClient from '@/api/client'
 import { getPage, getPageItems } from '@/api/page'
 import { Button } from '@/components/Button'
+import { CellTooltip } from '@/components/CellTooltip/CellTooltip'
 import { type Column } from '@/components/DataTable'
 import { EntityList } from '@/components/EntityListPage/EntityListPage'
-import { EntityIdCell, ENTITY_LIST_COL_ID } from '@/components/EntityListLeadingCells'
 import { FormField, FormStack } from '@/components/FormField'
 import { GenericSidebar } from '@/components/GenericSidebar/GenericSidebar'
 import { Input } from '@/components/Input'
 import { PageListHeader } from '@/components/PageListHeader'
 import { Select } from '@/components/Select/Select'
 import { translateApiError } from '@/i18n/apiError'
+import { toast } from '@/stores/toast'
 import { formatDateTime } from '@/utils/formatDateTime'
 import { parseBalanceYuanInput } from '@/utils/formatMoney'
 
 type OrderRow = {
   id: string
+  order_no: string
   user_id: string
   user_email: string
   plan_id: string | null
@@ -33,7 +35,7 @@ type OrderRow = {
 type UserOption = { id: string; email: string; role: string; status: string }
 type PlanOption = { id: string; name: string; enabled: boolean; traffic_period: string }
 
-const PERIODS = ['day', 'week', 'month', 'quarter', 'year', 'lifetime'] as const
+const PERIODS = ['month', 'quarter', 'half_year', 'year', 'two_year', 'three_year', 'traffic_pack', 'reset_pack', 'day', 'week', 'lifetime'] as const
 
 function yuanLabel(cents: number) {
   const yuan = (Number.isFinite(cents) ? cents : 0) / 100
@@ -54,8 +56,6 @@ export default function OrdersPage() {
   const [planId, setPlanId] = useState('')
   const [amountYuan, setAmountYuan] = useState('0.00')
   const [expiresAtLocal, setExpiresAtLocal] = useState('')
-  const [formError, setFormError] = useState('')
-
   const fetchOrders = useCallback(
     (params: { page: number; page_size: number }) =>
       getPage<OrderRow>('/v1/admin/orders', {
@@ -100,8 +100,9 @@ export default function OrdersPage() {
     onSuccess: async () => {
       setSidebarOpen(false)
       await invalidate()
+      toast.success(t('common.createSuccess'))
     },
-    onError: (error) => setFormError(error instanceof Error && error.message === t('orders.amountInvalid') ? error.message : translateApiError(t, error)),
+    onError: (error) => toast.error(error instanceof Error && error.message === t('orders.amountInvalid') ? error.message : translateApiError(t, error)),
   })
 
   const remove = useMutation({
@@ -112,8 +113,9 @@ export default function OrdersPage() {
       setViewing(null)
       setSidebarOpen(false)
       await invalidate()
+      toast.success(t('common.deleteSuccess'))
     },
-    onError: (error) => window.alert(translateApiError(t, error)),
+    onError: (error) => toast.error(translateApiError(t, error)),
   })
 
   const userOptions = useMemo(
@@ -131,6 +133,8 @@ export default function OrdersPage() {
     { label: t('orders.kindAll'), value: '' },
     { label: t('orders.kindNew'), value: 'new' },
     { label: t('orders.kindUpgrade'), value: 'upgrade' },
+    { label: t('orders.kindAddon'), value: 'addon' },
+    { label: t('orders.kindGift'), value: 'gift' },
   ]
   const periodOptions = [
     { label: t('orders.periodAll'), value: '' },
@@ -138,19 +142,27 @@ export default function OrdersPage() {
   ]
   const statusOptions = [
     { label: t('orders.statusAll'), value: '' },
+    { label: t('orders.statusPending'), value: 'pending' },
+    { label: t('orders.statusPaying'), value: 'paying' },
     { label: t('orders.statusCompleted'), value: 'completed' },
     { label: t('orders.statusCancelled'), value: 'cancelled' },
+    { label: t('orders.statusFailed'), value: 'failed' },
     { label: t('orders.statusCredited'), value: 'credited' },
   ]
 
   function kindLabel(value: string) {
     if (value === 'upgrade') return t('orders.kindUpgrade')
     if (value === 'new') return t('orders.kindNew')
+    if (value === 'addon') return t('orders.kindAddon')
+    if (value === 'gift') return t('orders.kindGift')
     return value
   }
   function statusLabel(value: string) {
+    if (value === 'pending') return t('orders.statusPending')
+    if (value === 'paying') return t('orders.statusPaying')
     if (value === 'completed') return t('orders.statusCompleted')
     if (value === 'cancelled') return t('orders.statusCancelled')
+    if (value === 'failed') return t('orders.statusFailed')
     if (value === 'credited') return t('orders.statusCredited')
     return value
   }
@@ -164,23 +176,25 @@ export default function OrdersPage() {
     setPlanId('')
     setAmountYuan('0.00')
     setExpiresAtLocal('')
-    setFormError('')
     setSidebarOpen(true)
   }
 
   function openView(row: OrderRow) {
     setViewing(row)
-    setFormError('')
     setSidebarOpen(true)
   }
 
   const columns: Column<OrderRow>[] = useMemo(() => [
     {
-      key: 'id',
+      key: 'order_no',
       title: t('orders.number'),
-      width: ENTITY_LIST_COL_ID,
+      width: 220,
       fixedWidth: true,
-      render: (row) => <EntityIdCell id={row.id} />,
+      render: (row) => (
+        <CellTooltip tip={row.order_no} className="data-table-cell font-mono text-xs">
+          {row.order_no}
+        </CellTooltip>
+      ),
     },
     {
       key: 'kind',
@@ -191,7 +205,7 @@ export default function OrdersPage() {
     {
       key: 'plan_name',
       title: t('orders.plan'),
-      render: (row) => <span className="data-table-cell" title={row.plan_name}>{row.plan_name}</span>,
+      render: (row) => <CellTooltip tip={row.plan_name} className="data-table-cell">{row.plan_name}</CellTooltip>,
     },
     {
       key: 'period',
@@ -215,7 +229,7 @@ export default function OrdersPage() {
       key: 'user_email',
       title: t('orders.user'),
       width: 180,
-      render: (row) => <span className="data-table-cell" title={row.user_email}>{row.user_email}</span>,
+      render: (row) => <CellTooltip tip={row.user_email} className="data-table-cell">{row.user_email}</CellTooltip>,
     },
     {
       key: 'created_at',
@@ -249,7 +263,6 @@ export default function OrdersPage() {
   return (
     <section className="page-container">
       <PageListHeader
-        title={t('pages.orders')}
         actions={(
           <>
             <Button size="sm" onClick={openCreate}>
@@ -299,9 +312,8 @@ export default function OrdersPage() {
             <Button
               loading={create.isPending}
               onClick={() => {
-                setFormError('')
                 if (!userId || !planId) {
-                  setFormError(t('orders.required'))
+                  toast.error(t('orders.required'))
                   return
                 }
                 create.mutate()
@@ -314,7 +326,7 @@ export default function OrdersPage() {
       >
         {viewing ? (
           <FormStack>
-            <FormField label={t('orders.number')}><p className="text-sm">{viewing.id}</p></FormField>
+            <FormField label={t('orders.number')}><p className="text-sm font-mono">{viewing.order_no}</p></FormField>
             <FormField label={t('orders.user')}><p className="text-sm">{viewing.user_email}</p></FormField>
             <FormField label={t('orders.kind')}><p className="text-sm">{kindLabel(viewing.kind)}</p></FormField>
             <FormField label={t('orders.plan')}><p className="text-sm">{viewing.plan_name}</p></FormField>
@@ -325,7 +337,6 @@ export default function OrdersPage() {
           </FormStack>
         ) : (
           <FormStack>
-            {formError ? <p className="sidebar-form-error" role="alert">{formError}</p> : null}
             <FormField label={t('orders.user')} required>
               <Select
                 value={userId || undefined}

@@ -1,0 +1,34 @@
+# tz-board 配置示例
+# 复制为可执行文件同级目录下的 board.toml，或通过 -c / TANZAKU_CONFIG 指定。
+#
+# 路径优先级：-c/--config > TANZAKU_CONFIG > <exe>/board.toml
+# 监听地址可用环境变量覆盖：
+#   TANZAKU_LISTEN_ADMIN / TANZAKU_LISTEN_USER
+#
+# admin：管理前端 / API + server（node）WebSocket `/ws`
+# user ：用户前端 / API + client（agent）WebSocket `/ws`
+
+[listen]
+admin = "0.0.0.0:9000"
+user = "0.0.0.0:9001"
+
+# 真实客户端 IP：始终优先读 CF-Connecting-IP / X-Real-IP / X-Forwarded-For 等头
+#（与 YibinServer 相同，CDN/nginx 无需额外 board 侧配置）。无转发头时才用 TCP peer。
+# trusted_proxies 目前仅保留兼容，不影响取 IP。
+
+# 首次通过管理端安装向导写入 postgres/redis；也可预先填好。
+# [postgres]
+# host = "127.0.0.1"
+# port = 5432
+# database = "tanzaku"
+# user = "tanzaku"
+# password = "change-me"
+# sslmode = "disable"
+# max_connections = 16
+#
+# [redis]
+# host = "127.0.0.1"
+# port = 6379
+# database = 0
+# # password = "change-me"
+# tls = false

@@ -1,0 +1,27 @@
+-- 站点 / 站点安全 / 邮件 配置默认值（已有键不覆盖）
+INSERT INTO system_settings (key, value) VALUES
+  ('site_title', '""'::jsonb),
+  ('site_subtitle', '""'::jsonb),
+  ('site_description', '""'::jsonb),
+  ('site_url', '""'::jsonb),
+  ('trial_plan_id', 'null'::jsonb),
+  ('trial_duration_days', '7'::jsonb),
+  ('security_email_verification', 'false'::jsonb),
+  ('security_safe_mode', 'false'::jsonb),
+  ('security_email_suffix_whitelist_enabled', 'false'::jsonb),
+  ('security_email_suffix_whitelist', '[]'::jsonb),
+  ('security_captcha_enabled', 'false'::jsonb),
+  ('security_ip_register_limit_enabled', 'false'::jsonb),
+  ('security_ip_register_max_count', '3'::jsonb),
+  ('security_ip_register_window_minutes', '60'::jsonb),
+  ('security_password_attempt_limit_enabled', 'false'::jsonb),
+  ('security_password_attempt_max', '5'::jsonb),
+  ('security_password_lock_minutes', '0'::jsonb),
+  ('mail_smtp_host', '""'::jsonb),
+  ('mail_smtp_port', '465'::jsonb),
+  ('mail_smtp_encryption', '"ssl"'::jsonb),
+  ('mail_smtp_username', '""'::jsonb),
+  ('mail_smtp_password', '""'::jsonb),
+  ('mail_from_address', '""'::jsonb),
+  ('mail_notify_enabled', 'false'::jsonb)
+ON CONFLICT (key) DO NOTHING;

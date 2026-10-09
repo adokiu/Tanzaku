@@ -13,6 +13,7 @@ udp = []
 http = ["dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:http"]
 
 [dependencies]
+portable-atomic.workspace = true
 arc-swap.workspace = true
 async-trait.workspace = true
 bytes.workspace = true

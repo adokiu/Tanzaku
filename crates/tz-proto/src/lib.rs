@@ -84,20 +84,17 @@ pub enum ControlOp {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GuardEventReport {
-    /// 策略模块名，如 `per_ip_limit` / `udp_amplify` / `block_http_on_l4`。
+    /// 攻击/防护类型，如 `per_ip_limit` / `udp_amplify`。
     pub rule: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub peer: Option<String>,
+    /// 关联隧道（控制面状态：用于自动暂停等处置）；无则仅记节点级事件。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel_id: Option<Uuid>,
-    #[serde(default)]
-    pub detail: String,
-    /// 本条上报合并的命中次数（节点侧短时聚合）。
-    #[serde(default = "default_guard_hit_count")]
-    pub hit_count: u32,
+    /// 本窗口攻击强度（拒绝次数）。控制面不携带来源 IP / 载荷等业务原始数据。
+    #[serde(default = "default_guard_intensity", alias = "hit_count")]
+    pub intensity: u32,
 }
 
-const fn default_guard_hit_count() -> u32 {
+const fn default_guard_intensity() -> u32 {
     1
 }
 
@@ -249,6 +246,9 @@ pub struct NodeConfig {
     /// 中国大陆节点且全局策略开启：未过白域名禁止 HTTP 隧道，访问时返回备案页。
     #[serde(default)]
     pub cn_http_filing: bool,
+    /// 中国大陆节点且全局策略开启：仅允许境内 Client 建立 carrier 连接（按对端 IP 地理校验）。
+    #[serde(default)]
+    pub cn_residency: bool,
     /// 备案过白域名（apex 及其子域）。
     #[serde(default)]
     pub domain_whitelist: Vec<String>,
@@ -284,6 +284,8 @@ pub struct NodeTlsCertificate {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HttpDomainRoute {
+    #[serde(default)]
+    pub https_enabled: bool,
     pub domain: String,
     pub tunnel_id: Uuid,
     pub client_fingerprint: Option<String>,
@@ -302,6 +304,8 @@ pub struct ClientConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TunnelSpec {
+    #[serde(default)]
+    pub https_enabled: bool,
     pub tunnel_id: Uuid,
     pub revision: i64,
     pub protocol: String,

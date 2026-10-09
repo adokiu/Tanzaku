@@ -38,7 +38,12 @@ impl TunnelTrafficAccounting {
         }
     }
 
-    /// 在连接任务里与转发 `select!`，隧道被摘除时完成。
+    /// 踢掉存量连接（例如 L4 拦截刚开启），但不永久关闭隧道；新连接可继续建立。
+    pub fn kick_connections(&self) {
+        self.closed_notify.notify_waiters();
+    }
+
+    /// 在连接任务里与转发 `select!`，隧道被摘除或被踢时完成。
     pub async fn connections_closed(&self) {
         let notified = self.closed_notify.notified();
         tokio::pin!(notified);

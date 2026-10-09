@@ -579,11 +579,18 @@ async fn accrue_subscription_traffic(
     let Some(sub) = sub else {
         return Ok(());
     };
+    let raw: Option<serde_json::Value> = sqlx::query_scalar(
+        "SELECT value FROM system_settings WHERE key = 'traffic_reset_mode'",
+    )
+    .fetch_optional(&mut **tx)
+    .await?;
+    let system_mode = crate::system_settings::parse_traffic_reset_mode(raw);
     let period_start = crate::subscription_period::subscription_period_start(
         &sub.traffic_period,
         sub.starts_at,
         sub.period_anchor,
         Utc::now(),
+        &system_mode,
     );
     sqlx::query(
         "INSERT INTO traffic_usage (subscription_id, period_start, bytes_in, bytes_out, updated_at) VALUES ($1, $2, $3, $4, now()) ON CONFLICT (subscription_id, period_start) DO UPDATE SET bytes_in = traffic_usage.bytes_in + EXCLUDED.bytes_in, bytes_out = traffic_usage.bytes_out + EXCLUDED.bytes_out, updated_at = now()",

@@ -118,7 +118,13 @@ function ProtectedLayout({ audience }: { audience: Audience }) {
     return () => { active = false }
   }, [setAccount])
   if (loading) return <FullPageMessage>正在验证登录状态</FullPageMessage>
-  if (!account || account.role !== audience) return <Navigate to="/login" replace />
+  if (!account) return <Navigate to="/login" replace />
+  if (audience === 'admin' && account.role !== 'admin') {
+    return <Navigate to="/login" replace />
+  }
+  if (audience === 'user' && account.role !== 'user' && account.role !== 'admin') {
+    return <Navigate to="/login" replace />
+  }
   return <AppLayout audience={audience} />
 }
 

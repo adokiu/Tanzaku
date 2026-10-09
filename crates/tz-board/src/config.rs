@@ -9,14 +9,17 @@ pub struct BoardConfig {
     pub listen: ListenConfig,
     pub postgres: Option<PgConfig>,
     pub redis: Option<RedisConfig>,
+    /// 保留字段（兼容旧配置）。真实 IP 始终优先读转发头，与是否在此列表无关。
+    #[serde(default = "crate::client_ip::default_trusted_proxy_cidrs")]
+    pub trusted_proxies: Vec<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ListenConfig {
+    /// 管理前端 / API + server（node）控制面 WebSocket（`/ws`）。
     pub admin: String,
+    /// 用户前端 / API + client（agent）控制面 WebSocket（`/ws`）。
     pub user: String,
-    pub node: String,
-    pub agent: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -43,8 +46,6 @@ pub struct RedisConfig {
 pub struct Listeners {
     pub admin: TcpListener,
     pub user: TcpListener,
-    pub node: TcpListener,
-    pub agent: TcpListener,
 }
 
 impl Default for BoardConfig {
@@ -53,6 +54,7 @@ impl Default for BoardConfig {
             listen: ListenConfig::default(),
             postgres: None,
             redis: None,
+            trusted_proxies: crate::client_ip::default_trusted_proxy_cidrs(),
         }
     }
 }
@@ -62,18 +64,16 @@ impl Default for ListenConfig {
         Self {
             admin: "0.0.0.0:9000".into(),
             user: "0.0.0.0:9001".into(),
-            node: "0.0.0.0:9002".into(),
-            agent: "0.0.0.0:9003".into(),
         }
     }
 }
 
-/// 可执行文件同目录下的 `config/board.toml`（无法解析 exe 时用 `./config/board.toml`）。
+/// 可执行文件同级目录下的 `board.toml`（无法解析 exe 时用 `./board.toml`）。
 pub fn default_config_path() -> PathBuf {
     env::current_exe()
         .ok()
-        .and_then(|path| path.parent().map(|dir| dir.join("config/board.toml")))
-        .unwrap_or_else(|| PathBuf::from("config/board.toml"))
+        .and_then(|path| path.parent().map(|dir| dir.join("board.toml")))
+        .unwrap_or_else(|| PathBuf::from("board.toml"))
 }
 
 /// 命令行 `-c` / `--config` > 环境变量 `TANZAKU_CONFIG` > [`default_config_path`].
@@ -121,6 +121,7 @@ impl BoardConfig {
             listen,
             postgres: Some(postgres),
             redis: Some(redis),
+            trusted_proxies: crate::client_ip::default_trusted_proxy_cidrs(),
         }
     }
 
@@ -166,8 +167,6 @@ impl BoardConfig {
         for (key, value) in [
             ("TANZAKU_LISTEN_ADMIN", &mut self.listen.admin),
             ("TANZAKU_LISTEN_USER", &mut self.listen.user),
-            ("TANZAKU_LISTEN_NODE", &mut self.listen.node),
-            ("TANZAKU_LISTEN_AGENT", &mut self.listen.agent),
         ] {
             if let Ok(override_value) = env::var(key) {
                 *value = override_value;
@@ -177,12 +176,7 @@ impl BoardConfig {
     }
 
     fn validate_listeners(&self) -> anyhow::Result<()> {
-        let addresses = [
-            &self.listen.admin,
-            &self.listen.user,
-            &self.listen.node,
-            &self.listen.agent,
-        ];
+        let addresses = [&self.listen.admin, &self.listen.user];
         let mut parsed = Vec::with_capacity(addresses.len());
         for address in addresses {
             parsed.push(
@@ -191,10 +185,8 @@ impl BoardConfig {
                     .context("invalid listener address in board configuration")?,
             );
         }
-        for (index, address) in parsed.iter().enumerate() {
-            if parsed[..index].contains(address) {
-                bail!("board listener addresses must be unique");
-            }
+        if parsed[0] == parsed[1] {
+            bail!("board listener addresses must be unique");
         }
         Ok(())
     }
@@ -290,12 +282,6 @@ impl Listeners {
             user: TcpListener::bind(&config.user)
                 .await
                 .context("failed to bind user listener")?,
-            node: TcpListener::bind(&config.node)
-                .await
-                .context("failed to bind node listener")?,
-            agent: TcpListener::bind(&config.agent)
-                .await
-                .context("failed to bind client listener")?,
         })
     }
 }

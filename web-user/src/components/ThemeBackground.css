@@ -1,0 +1,29 @@
+.theme-background {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.theme-background__media {
+  position: absolute;
+  inset: -20px;
+  width: calc(100% + 40px);
+  height: calc(100% + 40px);
+  object-fit: cover;
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+}
+
+.theme-background__overlay {
+  position: absolute;
+  inset: 0;
+}
+
+.app-shell,
+.login-page {
+  position: relative;
+  z-index: 1;
+}

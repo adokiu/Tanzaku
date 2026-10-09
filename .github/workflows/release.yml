@@ -1,0 +1,211 @@
+name: Release
+
+# 推送 v* tag 触发：构建全平台 client / server、Linux board、用户主题 zip，发布到 GitHub Release。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 发布的 tag（如 v0.2.0），留空只构建不发布
+        required: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        shell: bash
+        run: |
+          tag="${{ github.event.inputs.tag }}"
+          if [[ -z "$tag" && "${GITHUB_REF}" == refs/tags/* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+          fi
+          version="${tag#v}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${version:-0.0.0-dev}" >> "$GITHUB_OUTPUT"
+
+  agents:
+    name: agents ${{ matrix.name }}
+    needs: version
+    runs-on: ${{ matrix.os }}
+    # mips 为 Rust tier 3（nightly + build-std），单独失败不阻塞发布。
+    continue-on-error: ${{ matrix.tier3 == true }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-amd64,   os: ubuntu-latest,  target: x86_64-unknown-linux-musl,  cross: true }
+          - { name: linux-386,     os: ubuntu-latest,  target: i686-unknown-linux-musl,    cross: true }
+          - { name: linux-arm64,   os: ubuntu-latest,  target: aarch64-unknown-linux-musl, cross: true }
+          - { name: linux-mips,    os: ubuntu-latest,  target: mips-unknown-linux-musl,    cross: true, tier3: true }
+          - { name: linux-mipsle,  os: ubuntu-latest,  target: mipsel-unknown-linux-musl,  cross: true, tier3: true }
+          - { name: darwin-amd64,  os: macos-14,       target: x86_64-apple-darwin }
+          - { name: darwin-arm64,  os: macos-14,       target: aarch64-apple-darwin }
+          - { name: windows-amd64, os: windows-latest, target: x86_64-pc-windows-msvc,  ext: .exe }
+          - { name: windows-386,   os: windows-latest, target: i686-pc-windows-msvc,    ext: .exe }
+          - { name: windows-arm64, os: windows-latest, target: aarch64-pc-windows-msvc, ext: .exe }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set version
+        shell: bash
+        run: |
+          perl -0pi -e 's/(\[workspace\.package\]\s*\nversion = ")[^"]+/${1}${{ needs.version.outputs.version }}/' Cargo.toml
+
+      - name: Rust toolchain
+        shell: bash
+        run: |
+          rustup show
+          if [[ "${{ matrix.tier3 }}" == "true" ]]; then
+            rustup toolchain install nightly --profile minimal --component rust-src
+          elif [[ "${{ matrix.cross }}" != "true" ]]; then
+            rustup target add ${{ matrix.target }}
+          fi
+
+      - uses: ilammy/setup-nasm@v1
+        if: runner.os == 'Windows'
+
+      - uses: taiki-e/install-action@v2
+        if: matrix.cross == true
+        with:
+          tool: cross
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        shell: bash
+        run: |
+          if [[ "${{ matrix.tier3 }}" == "true" ]]; then
+            cross +nightly build --release --target ${{ matrix.target }} -p tz-client -p tz-server
+          elif [[ "${{ matrix.cross }}" == "true" ]]; then
+            cross build --release --target ${{ matrix.target }} -p tz-client -p tz-server
+          else
+            cargo build --release --target ${{ matrix.target }} -p tz-client -p tz-server
+          fi
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p out
+          for bin in tanzaku-client tanzaku-server; do
+            cp "target/${{ matrix.target }}/release/${bin}${{ matrix.ext }}" "out/${bin}-${{ matrix.name }}${{ matrix.ext }}"
+          done
+          ls -lh out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agents-${{ matrix.name }}
+          path: out/*
+          if-no-files-found: error
+
+  board:
+    name: board ${{ matrix.name }}
+    needs: version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-amd64, target: x86_64-unknown-linux-musl }
+          - { name: linux-arm64, target: aarch64-unknown-linux-musl }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set version
+        run: |
+          perl -0pi -e 's/(\[workspace\.package\]\s*\nversion = ")[^"]+/${1}${{ needs.version.outputs.version }}/' Cargo.toml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web-admin/package-lock.json
+      - name: Build web-admin
+        working-directory: web-admin
+        run: |
+          npm ci
+          npm run build
+      - name: Rust toolchain
+        run: rustup show
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: board-${{ matrix.target }}
+      - name: Build
+        run: cross build --release --target ${{ matrix.target }} -p tz-board
+      - name: Package
+        run: |
+          mkdir -p out
+          cp "target/${{ matrix.target }}/release/tz-board" "out/tz-board-${{ matrix.name }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: board-${{ matrix.name }}
+          path: out/*
+          if-no-files-found: error
+
+  theme:
+    name: user theme
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web-user/package-lock.json
+      - name: Build web-user theme zip
+        run: |
+          cd web-user
+          npm ci
+          npm run build
+          short=$(node -p "require('./tanzaku-theme.json').short")
+          version=$(node -p "require('./tanzaku-theme.json').version")
+          staging=$(mktemp -d)
+          mkdir -p "$staging/dist"
+          cp tanzaku-theme.json "$staging/"
+          cp -R dist/. "$staging/dist/"
+          [[ -f preview.png ]] && cp preview.png "$staging/"
+          mkdir -p ../out
+          (cd "$staging" && zip -qr "$GITHUB_WORKSPACE/out/${short}-${version}.zip" .)
+          ls -lh ../out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: theme
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    needs: [version, agents, board, theme]
+    if: needs.version.outputs.tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cp install.sh install.ps1 artifacts/
+          cd artifacts
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: ${{ needs.version.outputs.tag }}
+          generate_release_notes: true
+          prerelease: ${{ contains(needs.version.outputs.tag, '-') }}
+          files: artifacts/*

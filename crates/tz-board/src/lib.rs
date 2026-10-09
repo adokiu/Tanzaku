@@ -1,6 +1,7 @@
 pub mod api;
 pub mod page;
 mod carrier_secret;
+mod client_ip;
 pub mod config;
 mod pki;
 mod quota;
@@ -15,6 +16,8 @@ mod scheduler;
 mod stats;
 mod subscription_period;
 mod store;
+mod mail;
+mod payment;
 mod system_settings;
 mod guard_policy;
 mod guard_events;

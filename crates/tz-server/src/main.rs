@@ -1,4 +1,3 @@
-use anyhow::Context;
 use tracing_subscriber::EnvFilter;
 use tz_server::NodeRuntime;
 
@@ -8,28 +7,21 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
-    let mut args = std::env::args().skip(1);
-    let mut board = None;
-    let mut token = None;
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--board" => board = args.next(),
-            "--token" => token = args.next(),
-            _ => {}
-        }
-    }
-    let board = board.context("usage: tanzaku-server --board ws://127.0.0.1:9002/ws --token <node-token>")?;
-    let token = token.context("missing --token")?;
-    let board_ws = tz_agent::normalize_board_url(&board);
-    if board_ws != board.trim() {
-        tracing::info!(raw = %board, normalized = %board_ws, "board URL normalized (appended /ws)");
+    let connect = tz_agent::load_connect_config("server")?;
+    let board_ws = tz_agent::normalize_board_url(&connect.board);
+    if board_ws != connect.board.trim() {
+        tracing::info!(
+            raw = %connect.board,
+            normalized = %board_ws,
+            "board URL normalized (appended /ws)"
+        );
     }
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         board = %board_ws,
         "tanzaku-server starting"
     );
-    let runtime = NodeRuntime::bootstrap(board_ws, token);
+    let runtime = NodeRuntime::bootstrap(board_ws, connect.token);
     for carrier in tz_carrier::registered_kinds() {
         let worker = runtime.clone();
         let carrier = carrier.to_string();

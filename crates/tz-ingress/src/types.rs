@@ -19,6 +19,8 @@ pub struct TunnelEndpoint {
     pub port: u16,
     pub target_host: String,
     pub target_port: u16,
+    /// L4 拦截页按 SNI 选证书用的解析器（节点共享入口的 SniCertResolver）；None 则全程自签。
+    pub l4_block_cert_resolver: Option<Arc<crate::shared_https::SniCertResolver>>,
     /// 按 tunnel_id 索引；每次入站连接取最新 carrier（重连后 client_session 快照会过期）。
     pub live_sessions: Arc<DashMap<Uuid, Arc<dyn CarrierSession>>>,
     pub client_session: Arc<dyn CarrierSession>,
@@ -36,6 +38,8 @@ pub struct TunnelEndpoint {
     pub http_hosts: Arc<ArcSwap<DedicatedHttpHosts>>,
     /// 中国大陆未备案域名拦截；热更新，不重启监听。
     pub filing: Arc<ArcSwap<crate::filing::FilingGate>>,
+    /// 独立端口 HTTP 隧道的公网协议：true 仅 HTTPS（明文请求 308 跳转），false 仅 HTTP。
+    pub https_enabled: bool,
 }
 
 /// 独立端口 HTTP 入口的 Host 白名单：`节点IP:端口` 与隧道已审核域名。
@@ -65,6 +69,10 @@ impl DedicatedHttpHosts {
             return true;
         }
         let name = host_without_port(&host);
+        // 部分客户端 Host 不带端口，仍允许匹配节点公网 IP。
+        if name == host_without_port(&self.ip_host) {
+            return true;
+        }
         self.domains.iter().any(|domain| domain == name)
     }
 }

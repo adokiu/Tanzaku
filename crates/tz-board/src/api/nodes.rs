@@ -43,6 +43,7 @@ struct NodeChoice {
 #[derive(Deserialize)]
 struct PortCheckQuery {
     l4: String,
+    #[serde(deserialize_with = "crate::page::deserialize_query_u16")]
     port: u16,
 }
 

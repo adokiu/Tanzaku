@@ -10,6 +10,8 @@ use tokio::net::TcpStream;
 use crate::quic_io::QuicIo;
 #[cfg(feature = "tcp")]
 use crate::tcp_enc::EncryptedStream;
+#[cfg(feature = "tcp")]
+use crate::tcp_mux::TcpMuxStream;
 
 pub enum CarrierStream {
     #[cfg(feature = "quic")]
@@ -17,6 +19,8 @@ pub enum CarrierStream {
     Tcp(TcpStream),
     #[cfg(feature = "tcp")]
     TcpEncrypted(EncryptedStream),
+    #[cfg(feature = "tcp")]
+    TcpMux(TcpMuxStream),
 }
 
 impl CarrierStream {
@@ -33,6 +37,11 @@ impl CarrierStream {
     pub fn tcp_encrypted(stream: EncryptedStream) -> Self {
         Self::TcpEncrypted(stream)
     }
+
+    #[cfg(feature = "tcp")]
+    pub fn tcp_mux(stream: TcpMuxStream) -> Self {
+        Self::TcpMux(stream)
+    }
 }
 
 impl AsyncRead for CarrierStream {
@@ -47,6 +56,8 @@ impl AsyncRead for CarrierStream {
             Self::Tcp(stream) => Pin::new(stream).poll_read(cx, buf),
             #[cfg(feature = "tcp")]
             Self::TcpEncrypted(stream) => Pin::new(stream).poll_read(cx, buf),
+            #[cfg(feature = "tcp")]
+            Self::TcpMux(stream) => Pin::new(stream).poll_read(cx, buf),
         }
     }
 }
@@ -63,6 +74,8 @@ impl AsyncWrite for CarrierStream {
             Self::Tcp(stream) => Pin::new(stream).poll_write(cx, buf),
             #[cfg(feature = "tcp")]
             Self::TcpEncrypted(stream) => Pin::new(stream).poll_write(cx, buf),
+            #[cfg(feature = "tcp")]
+            Self::TcpMux(stream) => Pin::new(stream).poll_write(cx, buf),
         }
     }
 
@@ -73,6 +86,8 @@ impl AsyncWrite for CarrierStream {
             Self::Tcp(stream) => Pin::new(stream).poll_flush(cx),
             #[cfg(feature = "tcp")]
             Self::TcpEncrypted(stream) => Pin::new(stream).poll_flush(cx),
+            #[cfg(feature = "tcp")]
+            Self::TcpMux(stream) => Pin::new(stream).poll_flush(cx),
         }
     }
 
@@ -83,6 +98,8 @@ impl AsyncWrite for CarrierStream {
             Self::Tcp(stream) => Pin::new(stream).poll_shutdown(cx),
             #[cfg(feature = "tcp")]
             Self::TcpEncrypted(stream) => Pin::new(stream).poll_shutdown(cx),
+            #[cfg(feature = "tcp")]
+            Self::TcpMux(stream) => Pin::new(stream).poll_shutdown(cx),
         }
     }
 }
