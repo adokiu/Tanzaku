@@ -9,7 +9,7 @@ param(
     [ValidateSet("client", "server")]
     [string]$Role = "client",
     [string]$Version = "",
-    [string]$GithubProxy = "",
+    [Alias("GithubProxy")][string]$GhProxy = "",
     [string]$InstallDir = "",
     [string]$ServiceName = "",
     [ValidateSet("error", "warn", "info", "debug", "trace")]
@@ -75,7 +75,10 @@ if ($Version) {
 } else {
     $url = "https://github.com/$Repo/releases/latest/download/$asset"
 }
-if ($GithubProxy) { $url = $GithubProxy.TrimEnd('/') + "/" + $url }
+if ($GhProxy) {
+    if ($GhProxy -notmatch '^https?://') { $GhProxy = "https://$GhProxy" }
+    $url = $GhProxy.TrimEnd('/') + "/" + $url
+}
 
 Info "系统: windows/$archName  角色: $Role"
 Info "下载 $url"
@@ -84,7 +87,7 @@ $tmp = Join-Path $InstallDir ".$binName.download"
 try {
     Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
 } catch {
-    Fail "下载失败，可尝试 -GithubProxy 或 -Version：$($_.Exception.Message)"
+    Fail "下载失败，可尝试 -GhProxy 或 -Version：$($_.Exception.Message)"
 }
 
 Stop-Existing

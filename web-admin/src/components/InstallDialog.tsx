@@ -40,9 +40,15 @@ function psQuote(value: string) {
   return `'${value.replace(/"/g, '').replace(/'/g, "''")}'`
 }
 
-function withProxy(proxy: string, url: string) {
+function normalizeProxy(proxy: string) {
   const trimmed = proxy.trim().replace(/\/+$/, '')
-  return trimmed ? `${trimmed}/${url}` : url
+  if (!trimmed) return ''
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
+}
+
+function withProxy(proxy: string, url: string) {
+  const normalized = normalizeProxy(proxy)
+  return normalized ? `${normalized}/${url}` : url
 }
 
 export function InstallDialog({ open, onClose, role, name, tokenEndpoint, defaultBoard, initialToken }: InstallDialogProps) {
@@ -115,8 +121,8 @@ export function InstallDialog({ open, onClose, role, name, tokenEndpoint, defaul
       psArgs.push('-Version', psQuote(version.trim()))
     }
     if (githubProxy.trim()) {
-      shArgs.push('--github-proxy', shQuote(githubProxy.trim()))
-      psArgs.push('-GithubProxy', psQuote(githubProxy.trim()))
+      shArgs.push('--gh-proxy', shQuote(githubProxy.trim()))
+      psArgs.push('-GhProxy', psQuote(githubProxy.trim()))
     }
     if (installDir.trim()) {
       shArgs.push('--install-dir', shQuote(installDir.trim()))
@@ -134,7 +140,7 @@ export function InstallDialog({ open, onClose, role, name, tokenEndpoint, defaul
     const psUrl = withProxy(githubProxy, `${RAW_BASE}/install.ps1`)
     const fetcher = downloader === 'curl' ? `curl -fsSL ${shUrl}` : `wget -qO- ${shUrl}`
     return {
-      linux: `${fetcher} | sudo sh -s -- ${shArgs.join(' ')}`,
+      linux: `${fetcher} | sudo bash -s -- ${shArgs.join(' ')}`,
       windows: `powershell -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm '${psUrl}'))) ${psArgs.join(' ')}"`,
     }
   }, [board, downloader, githubProxy, installDir, logLevel, role, serviceName, tokenValue, version])
@@ -194,7 +200,7 @@ export function InstallDialog({ open, onClose, role, name, tokenEndpoint, defaul
               <Input value={version} onChange={(event) => setVersion(event.target.value)} placeholder={t('install.latest')} />
             </FormField>
             <FormField label={t('install.githubProxy')} hint={t('install.githubProxyHint')}>
-              <Input value={githubProxy} onChange={(event) => setGithubProxy(event.target.value)} placeholder="https://ghfast.top" />
+              <Input value={githubProxy} onChange={(event) => setGithubProxy(event.target.value)} placeholder="ghfast.top" />
             </FormField>
             <FormField label={t('install.installDir')}>
               <Input
