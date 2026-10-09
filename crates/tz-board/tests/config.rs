@@ -22,7 +22,8 @@ fn redis_connection_url_encodes_credentials() {
     let url = config.connection_url().unwrap();
     let parsed = url::Url::parse(&url).unwrap();
     assert_eq!(parsed.scheme(), "rediss");
-    assert_eq!(parsed.password(), Some("p@ss:/?#word"));
+    // `Url::password` 返回的是百分号编码后的原文。
+    assert_eq!(parsed.password(), Some("p%40ss%3A%2F%3F%23word"));
     assert_eq!(parsed.path(), "/2");
     assert!(!url.contains("p@ss:/?#word"));
 }
