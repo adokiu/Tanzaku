@@ -66,7 +66,7 @@ Config path precedence: `-c/--config` > `TANZAKU_CONFIG` env > `board.toml` next
 Create a node on the admin "Nodes" page, then click "Install" on its row. The dialog generates a one-line command with the token:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/adokiu/Tanzaku/main/install.sh | sudo bash -s -- -r server -e 'https://board.example.com:9000' -t 'NODE_TOKEN'
+curl -fsSL https://raw.githubusercontent.com/adokiu/Tanzaku/main/install.sh | sudo bash -s -- -r server -e 'wss://board.example.com:9000' -t 'NODE_TOKEN'
 ```
 
 ### 3. Add a client
@@ -74,13 +74,13 @@ curl -fsSL https://raw.githubusercontent.com/adokiu/Tanzaku/main/install.sh | su
 Create a client on the user "Clients" page and click "Install":
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/adokiu/Tanzaku/main/install.sh | sudo bash -s -- -e 'https://board.example.com:9001' -t 'CLIENT_TOKEN'
+curl -fsSL https://raw.githubusercontent.com/adokiu/Tanzaku/main/install.sh | sudo bash -s -- -e 'wss://board.example.com:9001' -t 'CLIENT_TOKEN'
 ```
 
 Windows (elevated PowerShell / CMD):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/adokiu/Tanzaku/main/install.ps1'))) -Role client -Endpoint 'https://board.example.com:9001' -Token 'CLIENT_TOKEN'"
+powershell -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/adokiu/Tanzaku/main/install.ps1'))) -Role client -Endpoint 'wss://board.example.com:9001' -Token 'CLIENT_TOKEN'"
 ```
 
 ### 4. Create a tunnel
@@ -109,8 +109,8 @@ Tokens can be viewed or reset at any time from the admin / user panel; a reset r
 ## Running Server / Client manually
 
 ```bash
-./tanzaku-server --board https://board.example.com:9000 --token NODE_TOKEN
-TANZAKU_BOARD=https://board.example.com:9001 TANZAKU_TOKEN=CLIENT_TOKEN ./tanzaku-client
+./tanzaku-server --board wss://board.example.com:9000 --token NODE_TOKEN
+TANZAKU_BOARD=wss://board.example.com:9001 TANZAKU_TOKEN=CLIENT_TOKEN ./tanzaku-client
 ```
 
 Precedence: command line > `TANZAKU_BOARD` / `TANZAKU_TOKEN` > `server.toml` / `client.toml` next to the executable (examples in `deploy/config/`).

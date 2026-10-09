@@ -4,9 +4,9 @@
 #   # Board（控制面）
 #   curl -fsSL https://raw.githubusercontent.com/adokiu/Tanzaku/main/install.sh | sudo bash -s -- -r board
 #   # 节点
-#   curl -fsSL https://raw.githubusercontent.com/adokiu/Tanzaku/main/install.sh | sudo bash -s -- -r server -e https://board.example.com:9000 -t TOKEN
+#   curl -fsSL https://raw.githubusercontent.com/adokiu/Tanzaku/main/install.sh | sudo bash -s -- -r server -e wss://board.example.com:9000 -t TOKEN
 #   # 客户端
-#   wget -qO- https://raw.githubusercontent.com/adokiu/Tanzaku/main/install.sh | sudo bash -s -- -e https://board.example.com:9001 -t TOKEN
+#   wget -qO- https://raw.githubusercontent.com/adokiu/Tanzaku/main/install.sh | sudo bash -s -- -e wss://board.example.com:9001 -t TOKEN
 #   # 走 GitHub 加速站
 #   curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/adokiu/Tanzaku/main/install.sh | sudo bash -s -- -r board --gh-proxy ghfast.top
 set -euo pipefail
@@ -293,6 +293,14 @@ fi
 if [[ "$ROLE" != "board" ]]; then
   [[ -n "$ENDPOINT" ]] || { usage; die "缺少 -e / --endpoint"; }
   [[ -n "$TOKEN" ]] || { usage; die "缺少 -t / --token"; }
+  # 控制通道是 WebSocket：https -> wss，http -> ws，未写协议默认 ws。
+  case "$ENDPOINT" in
+    https://*|HTTPS://*) ENDPOINT="wss://${ENDPOINT#*://}" ;;
+    http://*|HTTP://*) ENDPOINT="ws://${ENDPOINT#*://}" ;;
+    ws://*|wss://*|WS://*|WSS://*) ;;
+    *) ENDPOINT="ws://$ENDPOINT" ;;
+  esac
+  ENDPOINT="${ENDPOINT%/}"
 fi
 
 ARCH="$(detect_arch)"

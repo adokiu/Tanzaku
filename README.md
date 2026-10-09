@@ -65,7 +65,7 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/adokiu/Tanzaku/m
 管理端「节点」页新建节点，点击该行的「安装」按钮，弹窗会生成带 token 的一键命令，形如：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/adokiu/Tanzaku/main/install.sh | sudo bash -s -- -r server -e 'https://board.example.com:9000' -t 'NODE_TOKEN'
+curl -fsSL https://raw.githubusercontent.com/adokiu/Tanzaku/main/install.sh | sudo bash -s -- -r server -e 'wss://board.example.com:9000' -t 'NODE_TOKEN'
 ```
 
 ### 3. 添加客户端（Client）
@@ -73,13 +73,13 @@ curl -fsSL https://raw.githubusercontent.com/adokiu/Tanzaku/main/install.sh | su
 用户端「客户端」页新建客户端，同样点击「安装」生成命令：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/adokiu/Tanzaku/main/install.sh | sudo bash -s -- -e 'https://board.example.com:9001' -t 'CLIENT_TOKEN'
+curl -fsSL https://raw.githubusercontent.com/adokiu/Tanzaku/main/install.sh | sudo bash -s -- -e 'wss://board.example.com:9001' -t 'CLIENT_TOKEN'
 ```
 
 Windows（管理员 PowerShell / CMD）：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/adokiu/Tanzaku/main/install.ps1'))) -Role client -Endpoint 'https://board.example.com:9001' -Token 'CLIENT_TOKEN'"
+powershell -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/adokiu/Tanzaku/main/install.ps1'))) -Role client -Endpoint 'wss://board.example.com:9001' -Token 'CLIENT_TOKEN'"
 ```
 
 ### 4. 创建隧道
@@ -108,8 +108,8 @@ Token 可在管理端 / 用户端随时查看或重置，重置后旧 token 立�
 ## 手动运行 Server / Client
 
 ```bash
-./tanzaku-server --board https://board.example.com:9000 --token NODE_TOKEN
-TANZAKU_BOARD=https://board.example.com:9001 TANZAKU_TOKEN=CLIENT_TOKEN ./tanzaku-client
+./tanzaku-server --board wss://board.example.com:9000 --token NODE_TOKEN
+TANZAKU_BOARD=wss://board.example.com:9001 TANZAKU_TOKEN=CLIENT_TOKEN ./tanzaku-client
 ```
 
 参数优先级：命令行 > `TANZAKU_BOARD` / `TANZAKU_TOKEN` > 同级 `server.toml` / `client.toml`（示例见 `deploy/config/`）。

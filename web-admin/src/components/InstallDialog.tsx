@@ -46,6 +46,16 @@ function normalizeProxy(proxy: string) {
   return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
 }
 
+/** 控制通道是 WebSocket：https -> wss，http -> ws，未写协议默认 ws。 */
+export function toWsUrl(raw: string) {
+  const trimmed = raw.trim().replace(/\/+$/, '')
+  if (!trimmed) return ''
+  if (/^https:\/\//i.test(trimmed)) return `wss://${trimmed.slice(8)}`
+  if (/^http:\/\//i.test(trimmed)) return `ws://${trimmed.slice(7)}`
+  if (/^wss?:\/\//i.test(trimmed)) return trimmed
+  return `ws://${trimmed}`
+}
+
 function withProxy(proxy: string, url: string) {
   const normalized = normalizeProxy(proxy)
   return normalized ? `${normalized}/${url}` : url
@@ -69,7 +79,7 @@ export function InstallDialog({ open, onClose, role, name, tokenEndpoint, defaul
 
   useEffect(() => {
     if (!open) return
-    setBoard(defaultBoard)
+    setBoard(toWsUrl(defaultBoard))
     setShowToken(false)
     if (initialToken) {
       setToken({ token: initialToken, token_prefix: initialToken.slice(0, 12) })
@@ -113,7 +123,7 @@ export function InstallDialog({ open, onClose, role, name, tokenEndpoint, defaul
 
   const commands = useMemo(() => {
     const tokenArg = tokenValue || tokenPlaceholder
-    const boardArg = board.trim() || '<BOARD_URL>'
+    const boardArg = toWsUrl(board) || '<BOARD_URL>'
     const shArgs = ['-r', role, '-e', shQuote(boardArg), '-t', shQuote(tokenArg)]
     const psArgs = ['-Role', role, '-Endpoint', psQuote(boardArg), '-Token', psQuote(tokenArg)]
     if (version.trim()) {
@@ -192,7 +202,7 @@ export function InstallDialog({ open, onClose, role, name, tokenEndpoint, defaul
           </FormField>
 
           <FormField label={t('install.board')} required hint={t(role === 'server' ? 'install.boardHintServer' : 'install.boardHintClient')}>
-            <Input value={board} onChange={(event) => setBoard(event.target.value)} placeholder="https://board.example.com:9001" />
+            <Input value={board} onChange={(event) => setBoard(event.target.value)} placeholder="wss://board.example.com:9001" />
           </FormField>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>

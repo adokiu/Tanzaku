@@ -26,6 +26,17 @@ pub fn normalize_board_url(raw: &str) -> String {
     if trimmed.is_empty() {
         return trimmed.to_string();
     }
+    let lower = trimmed.to_ascii_lowercase();
+    let converted = if lower.starts_with("https://") {
+        format!("wss://{}", &trimmed["https://".len()..])
+    } else if lower.starts_with("http://") {
+        format!("ws://{}", &trimmed["http://".len()..])
+    } else if !lower.contains("://") {
+        format!("ws://{trimmed}")
+    } else {
+        trimmed.to_string()
+    };
+    let trimmed = converted.as_str();
     if trimmed.ends_with("/ws") {
         return trimmed.to_string();
     }

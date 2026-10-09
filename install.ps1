@@ -1,6 +1,6 @@
 # Tanzaku 一键安装（Windows）。以管理员身份运行 PowerShell：
 #
-#   powershell -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/adokiu/Tanzaku/main/install.ps1))) -Endpoint 'https://board.example.com:9001' -Token 'TOKEN'"
+#   powershell -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/adokiu/Tanzaku/main/install.ps1))) -Endpoint 'wss://board.example.com:9001' -Token 'TOKEN'"
 #
 # 以开机启动的计划任务（SYSTEM 账户）运行，异常退出每分钟自动重启。
 param(
@@ -58,6 +58,11 @@ if ($Uninstall) {
 }
 
 if (-not $Endpoint) { Fail "缺少 -Endpoint" }
+# 控制通道是 WebSocket：https -> wss，http -> ws，未写协议默认 ws。
+$Endpoint = $Endpoint.Trim().TrimEnd('/')
+if ($Endpoint -match '^(?i)https://') { $Endpoint = 'wss://' + $Endpoint.Substring(8) }
+elseif ($Endpoint -match '^(?i)http://') { $Endpoint = 'ws://' + $Endpoint.Substring(7) }
+elseif ($Endpoint -notmatch '^(?i)wss?://') { $Endpoint = 'ws://' + $Endpoint }
 if (-not $Token) { Fail "缺少 -Token" }
 
 $arch = $env:PROCESSOR_ARCHITEW6432
