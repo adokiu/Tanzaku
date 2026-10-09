@@ -294,8 +294,9 @@ mod tests {
         pipeline.reload(&json!({
             "tls_guard": {"enabled": true, "max_handshakes": 3}
         }));
-        assert!(pipeline.acquire_tls_handshake().is_ok());
-        assert!(pipeline.acquire_tls_handshake().is_ok());
+        // 许可是 RAII 守卫，必须持有，否则临时值析构会立即释放名额。
+        let _second = pipeline.acquire_tls_handshake().expect("slot");
+        let _third = pipeline.acquire_tls_handshake().expect("slot");
         assert!(pipeline.acquire_tls_handshake().is_err());
     }
 }

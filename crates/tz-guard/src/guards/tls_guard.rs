@@ -55,7 +55,7 @@ impl GuardModule for TlsGuard {
 
     fn release_tls_handshake(&self) {
         let _ = self.active.fetch_update(Ordering::AcqRel, Ordering::Relaxed, |active| {
-            (active > 0).then_some(active - 1)
+            active.checked_sub(1)
         });
     }
 
